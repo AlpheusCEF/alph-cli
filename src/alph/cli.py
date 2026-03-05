@@ -8,12 +8,12 @@ from rich.table import Table
 
 from alph.core import (
     create_node,
+    extract_frontmatter,
     init_pool,
     init_registry,
     list_nodes,
     show_node,
     validate_node,
-    extract_frontmatter,
 )
 
 app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.")

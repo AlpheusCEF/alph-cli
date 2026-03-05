@@ -3,7 +3,7 @@
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -460,7 +460,7 @@ def create_node(
         ``duplicate=True`` and ``existing_creator`` are set instead of
         writing a new file.
     """
-    resolved_timestamp = timestamp or datetime.now(timezone.utc).isoformat()
+    resolved_timestamp = timestamp or datetime.now(UTC).isoformat()
     node_id = generate_id(timestamp=resolved_timestamp, source=source, context=context)
 
     existing = check_idempotency(pool_path, node_id)
@@ -591,8 +591,8 @@ def show_node(pool_path: Path, node_id: str) -> NodeDetail | None:
                 source=str(frontmatter.get("source", "")),
                 creator=str(frontmatter.get("creator", "")),
                 body=body,
-                tags=list(tags) if isinstance(tags, list) else [],
-                related_to=list(related_to) if isinstance(related_to, list) else [],
+                tags=[str(t) for t in tags] if isinstance(tags, list) else [],
+                related_to=[str(r) for r in related_to] if isinstance(related_to, list) else [],
                 meta=dict(meta) if isinstance(meta, dict) else {},
             )
     return None
