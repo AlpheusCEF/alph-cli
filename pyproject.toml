@@ -6,16 +6,18 @@ authors = [
     {name = "Chase Pettet"}
 ]
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<4.0"
 dependencies = [
     "pyyaml>=6.0",
     "jsonschema>=4.0",
     "typer>=0.12",
     "rich>=13.0",
+    "fastmcp>=3.0",
 ]
 
 [project.scripts]
 alph = "alph.cli:app"
+alph-mcp = "alph.mcp_server:main"
 
 [tool.poetry]
 packages = [{include = "alph", from = "src"}]
@@ -43,6 +45,12 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"]  # typer.Option() in defaults is idiomatic Typer usage
+
+[tool.ruff.lint.per-file-ignores]
+"src/alph/core.py" = ["E501"]      # docstrings and comments are intentionally long
+"src/alph/cli.py" = ["E501"]       # CLI help strings are intentionally long
+"src/alph/mcp_server.py" = ["E501"]  # MCP docstrings are intentionally long
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
