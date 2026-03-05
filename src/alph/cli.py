@@ -22,7 +22,7 @@ pool_app = typer.Typer(help="Pool commands.")
 app.add_typer(registry_app, name="registry")
 app.add_typer(pool_app, name="pool")
 
-console = Console()
+console = Console(width=200)
 
 
 @registry_app.command("init")
@@ -67,6 +67,7 @@ def cmd_add(
     creator: str = typer.Option(..., "--creator", help="Creator email address."),
     node_type: str = typer.Option("fixed", "--type", help="'fixed' or 'live'."),
     content: str = typer.Option("", "--content", help="Optional Markdown body."),
+    status: str | None = typer.Option(None, "--status", help="active, archived, or suppressed."),
 ) -> None:
     """Create a context node in a pool."""
     result = create_node(
@@ -76,6 +77,7 @@ def cmd_add(
         context=context,
         creator=creator,
         content=content,
+        status=status,
     )
     if result.duplicate:
         console.print(
@@ -90,19 +92,39 @@ def cmd_add(
 @app.command("list")
 def cmd_list(
     pool: Path = typer.Option(..., "--pool", help="Path to the pool directory."),
+    status: list[str] = typer.Option(
+        [],
+        "-s",
+        "--status",
+        help="Expand beyond active: archived, suppressed, or all.",
+    ),
 ) -> None:
-    """List nodes in a pool with frontmatter summary."""
-    summaries = list_nodes(pool)
+    """List nodes in a pool with frontmatter summary.
+
+    By default only active nodes are shown. Use -s to expand:
+    -s archived   includes active + archived
+    -s suppressed includes active + suppressed
+    -s all        includes everything
+    """
+    if not status:
+        include_statuses: set[str] = {"active"}
+    elif "all" in status:
+        include_statuses = {"active", "archived", "suppressed"}
+    else:
+        include_statuses = {"active"} | set(status)
+
+    summaries = list_nodes(pool, include_statuses=include_statuses)
     if not summaries:
         console.print("no nodes found.")
         return
     table = Table(show_header=True, header_style="bold")
     table.add_column("ID", style="dim", width=14)
     table.add_column("type", width=7)
+    table.add_column("status", width=10)
     table.add_column("context")
     table.add_column("timestamp", width=22)
     for s in summaries:
-        table.add_row(s.node_id, s.node_type, s.context, s.timestamp)
+        table.add_row(s.node_id, s.node_type, s.status, s.context, s.timestamp)
     console.print(table)
 
 

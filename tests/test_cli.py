@@ -101,3 +101,61 @@ def test_validate_passes_for_valid_pool(tmp_path: Path) -> None:
                         "--pool", str(pool), "--creator", "chase@example.com"])
     result = runner.invoke(app, ["validate", "--pool", str(pool)])
     assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Status flag on list and add
+# ---------------------------------------------------------------------------
+
+
+def test_list_excludes_archived_by_default(tmp_path: Path) -> None:
+    """alph list omits archived nodes without -s flag."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, ["add", "-c", "Active node",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    runner.invoke(app, ["add", "-c", "Archived node", "--status", "archived",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    result = runner.invoke(app, ["list", "--pool", str(pool)])
+    assert result.exit_code == 0
+    assert "Active node" in result.output
+    assert "Archived node" not in result.output
+
+
+def test_list_includes_archived_with_status_flag(tmp_path: Path) -> None:
+    """alph list -s archived includes active and archived nodes."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, ["add", "-c", "Active node",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    runner.invoke(app, ["add", "-c", "Archived node", "--status", "archived",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    result = runner.invoke(app, ["list", "--pool", str(pool), "-s", "archived"])
+    assert result.exit_code == 0
+    assert "Active node" in result.output
+    assert "Archived node" in result.output
+
+
+def test_list_includes_all_nodes_with_status_all(tmp_path: Path) -> None:
+    """alph list -s all includes active, archived, and suppressed nodes."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, ["add", "-c", "Active node",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    runner.invoke(app, ["add", "-c", "Archived node", "--status", "archived",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    runner.invoke(app, ["add", "-c", "Suppressed node", "--status", "suppressed",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    result = runner.invoke(app, ["list", "--pool", str(pool), "-s", "all"])
+    assert result.exit_code == 0
+    assert "Active node" in result.output
+    assert "Archived node" in result.output
+    assert "Suppressed node" in result.output
+
+
+def test_add_with_status_writes_status_to_frontmatter(tmp_path: Path) -> None:
+    """alph add --status archived writes status field to node frontmatter."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, ["add", "-c", "Old note", "--status", "archived",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    node_file = next((pool / "snapshots").glob("*.md"))
+    frontmatter = extract_frontmatter(node_file.read_text())
+    assert frontmatter is not None
+    assert frontmatter["status"] == "archived"
