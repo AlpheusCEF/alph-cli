@@ -66,6 +66,7 @@ class NodeSummary:
     node_type: str
     timestamp: str
     source: str
+    status: str = "active"
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,8 @@ _REQUIRED_NODE_FIELDS = {
 
 _VALID_NODE_TYPES = {"fixed", "live"}
 _VALID_SCHEMA_VERSIONS = {"1"}
+_VALID_STATUSES = {"active", "archived", "suppressed"}
+_DEFAULT_STATUS = "active"
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +182,12 @@ def validate_node(frontmatter: dict[str, object]) -> ValidationResult:
         errors.append(
             f"invalid schema_version: '{frontmatter['schema_version']}'"
             f" (supported: {sorted(_VALID_SCHEMA_VERSIONS)})"
+        )
+
+    if "status" in frontmatter and frontmatter["status"] not in _VALID_STATUSES:
+        errors.append(
+            f"invalid status: '{frontmatter['status']}'"
+            f" (must be one of: {sorted(_VALID_STATUSES)})"
         )
 
     return ValidationResult(valid=len(errors) == 0, errors=errors)
@@ -423,6 +432,7 @@ def create_node(
     creator: str,
     timestamp: str | None = None,
     content: str = "",
+    status: str | None = None,
     tags: list[str] | None = None,
     related_to: list[str] | None = None,
     meta: dict[str, object] | None = None,
@@ -477,6 +487,8 @@ def create_node(
         "context": context,
         "creator": creator,
     }
+    if status is not None:
+        frontmatter["status"] = status
     if tags:
         frontmatter["tags"] = tags
     if related_to:
@@ -501,18 +513,26 @@ def create_node(
 # ---------------------------------------------------------------------------
 
 
-def list_nodes(pool_path: Path) -> list[NodeSummary]:
-    """List all nodes in a pool as lightweight summaries.
+def list_nodes(
+    pool_path: Path,
+    *,
+    include_statuses: set[str] | None = None,
+) -> list[NodeSummary]:
+    """List nodes in a pool as lightweight summaries, filtered by status.
 
-    Scans ``snapshots/`` and ``pointers/`` for Markdown files with valid
-    frontmatter, sorted by timestamp ascending.
+    Default behaviour (``include_statuses=None``) returns only active nodes
+    (those with ``status: active`` or no status field). Pass an explicit set
+    to expand the results — e.g. ``{"active", "archived"}`` or the full set
+    ``{"active", "archived", "suppressed"}`` for everything.
 
     Args:
         pool_path: Root directory of the pool.
+        include_statuses: Set of status values to include. None means active only.
 
     Returns:
-        List of NodeSummary, one per valid node file.
+        List of NodeSummary, one per matching node file.
     """
+    allowed = include_statuses if include_statuses is not None else {_DEFAULT_STATUS}
     summaries: list[NodeSummary] = []
     for subdir in ("snapshots", "pointers"):
         directory = pool_path / subdir
@@ -522,6 +542,9 @@ def list_nodes(pool_path: Path) -> list[NodeSummary]:
             frontmatter = extract_frontmatter(node_file.read_text())
             if not frontmatter:
                 continue
+            node_status = str(frontmatter.get("status", _DEFAULT_STATUS))
+            if node_status not in allowed:
+                continue
             summaries.append(
                 NodeSummary(
                     node_id=str(frontmatter.get("id", "")),
@@ -529,6 +552,7 @@ def list_nodes(pool_path: Path) -> list[NodeSummary]:
                     node_type=str(frontmatter.get("node_type", "")),
                     timestamp=str(frontmatter.get("timestamp", "")),
                     source=str(frontmatter.get("source", "")),
+                    status=node_status,
                 )
             )
     return summaries

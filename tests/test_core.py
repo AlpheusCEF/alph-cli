@@ -434,3 +434,165 @@ def test_live_node_passes_validation() -> None:
     result = validate_node(node)
     assert result.valid is True
     assert result.errors == []
+
+
+# ---------------------------------------------------------------------------
+# Status field
+# ---------------------------------------------------------------------------
+
+
+def _base_node(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "schema_version": "1",
+        "id": "a1b2c3d4e5f6",
+        "timestamp": "2026-03-05T10:00:00Z",
+        "source": "cli",
+        "node_type": "fixed",
+        "context": "Oil change",
+        "creator": "chase@example.com",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_node_without_status_passes_validation() -> None:
+    """A node without a status field is valid — active is the implicit default."""
+    result = validate_node(_base_node())
+    assert result.valid is True
+
+
+def test_node_with_explicit_active_status_passes_validation() -> None:
+    """A node with status: active is explicitly valid."""
+    result = validate_node(_base_node(status="active"))
+    assert result.valid is True
+
+
+def test_node_with_archived_status_passes_validation() -> None:
+    """A node with status: archived passes validation."""
+    result = validate_node(_base_node(status="archived"))
+    assert result.valid is True
+
+
+def test_node_with_suppressed_status_passes_validation() -> None:
+    """A node with status: suppressed passes validation."""
+    result = validate_node(_base_node(status="suppressed"))
+    assert result.valid is True
+
+
+def test_node_with_invalid_status_fails_validation() -> None:
+    """A node with an unrecognised status value fails validation."""
+    result = validate_node(_base_node(status="deleted"))
+    assert result.valid is False
+    assert any("status" in e for e in result.errors)
+
+
+def test_create_node_writes_status_to_frontmatter(tmp_path: Path) -> None:
+    """create_node writes the status field to frontmatter when provided."""
+    pool = _make_pool(tmp_path)
+    result = create_node(
+        pool_path=pool,
+        source="cli",
+        node_type="fixed",
+        context="Archived maintenance note",
+        creator="chase@example.com",
+        status="archived",
+    )
+    frontmatter = extract_frontmatter(result.path.read_text())
+    assert frontmatter is not None
+    assert frontmatter["status"] == "archived"
+
+
+def test_create_node_omits_status_from_frontmatter_when_not_provided(tmp_path: Path) -> None:
+    """create_node does not write a status field when none is given — active is implicit."""
+    pool = _make_pool(tmp_path)
+    result = create_node(
+        pool_path=pool,
+        source="cli",
+        node_type="fixed",
+        context="Normal node",
+        creator="chase@example.com",
+    )
+    frontmatter = extract_frontmatter(result.path.read_text())
+    assert frontmatter is not None
+    assert "status" not in frontmatter
+
+
+def test_list_nodes_excludes_archived_by_default(tmp_path: Path) -> None:
+    """list_nodes omits archived nodes from default results."""
+    pool = _make_pool(tmp_path)
+    create_node(pool_path=pool, source="cli", node_type="fixed",
+                context="Active node", creator="chase@example.com",
+                timestamp="2026-03-05T10:00:00Z")
+    create_node(pool_path=pool, source="cli", node_type="fixed",
+                context="Archived node", creator="chase@example.com",
+                timestamp="2026-03-05T11:00:00Z", status="archived")
+    summaries = list_nodes(pool)
+    contexts = {s.context for s in summaries}
+    assert "Active node" in contexts
+    assert "Archived node" not in contexts
+
+
+def test_list_nodes_excludes_suppressed_by_default(tmp_path: Path) -> None:
+    """list_nodes omits suppressed nodes from default results."""
+    pool = _make_pool(tmp_path)
+    create_node(pool_path=pool, source="cli", node_type="fixed",
+                context="Active node", creator="chase@example.com",
+                timestamp="2026-03-05T10:00:00Z")
+    create_node(pool_path=pool, source="cli", node_type="fixed",
+                context="Suppressed node", creator="chase@example.com",
+                timestamp="2026-03-05T11:00:00Z", status="suppressed")
+    summaries = list_nodes(pool)
+    contexts = {s.context for s in summaries}
+    assert "Active node" in contexts
+    assert "Suppressed node" not in contexts
+
+
+def test_list_nodes_includes_archived_when_requested(tmp_path: Path) -> None:
+    """list_nodes includes archived nodes when include_statuses contains archived."""
+    pool = _make_pool(tmp_path)
+    create_node(pool_path=pool, source="cli", node_type="fixed",
+                context="Active node", creator="chase@example.com",
+                timestamp="2026-03-05T10:00:00Z")
+    create_node(pool_path=pool, source="cli", node_type="fixed",
+                context="Archived node", creator="chase@example.com",
+                timestamp="2026-03-05T11:00:00Z", status="archived")
+    summaries = list_nodes(pool, include_statuses={"active", "archived"})
+    contexts = {s.context for s in summaries}
+    assert "Active node" in contexts
+    assert "Archived node" in contexts
+
+
+def test_list_nodes_includes_all_statuses_when_all_requested(tmp_path: Path) -> None:
+    """list_nodes returns every node when include_statuses contains all three values."""
+    pool = _make_pool(tmp_path)
+    create_node(pool_path=pool, source="cli", node_type="fixed",
+                context="Active node", creator="chase@example.com",
+                timestamp="2026-03-05T10:00:00Z")
+    create_node(pool_path=pool, source="cli", node_type="fixed",
+                context="Archived node", creator="chase@example.com",
+                timestamp="2026-03-05T11:00:00Z", status="archived")
+    create_node(pool_path=pool, source="cli", node_type="fixed",
+                context="Suppressed node", creator="chase@example.com",
+                timestamp="2026-03-05T12:00:00Z", status="suppressed")
+    summaries = list_nodes(pool, include_statuses={"active", "archived", "suppressed"})
+    assert len(summaries) == 3
+
+
+def test_node_summary_exposes_status(tmp_path: Path) -> None:
+    """NodeSummary from list_nodes includes the status field."""
+    pool = _make_pool(tmp_path)
+    create_node(pool_path=pool, source="cli", node_type="fixed",
+                context="Archived node", creator="chase@example.com",
+                timestamp="2026-03-05T10:00:00Z", status="archived")
+    summaries = list_nodes(pool, include_statuses={"active", "archived"})
+    assert summaries[0].status == "archived"
+
+
+def test_node_summary_status_defaults_to_active_when_absent(tmp_path: Path) -> None:
+    """NodeSummary reports status as active when frontmatter has no status field."""
+    pool = _make_pool(tmp_path)
+    create_node(pool_path=pool, source="cli", node_type="fixed",
+                context="Normal node", creator="chase@example.com",
+                timestamp="2026-03-05T10:00:00Z")
+    summaries = list_nodes(pool)
+    assert summaries[0].status == "active"
