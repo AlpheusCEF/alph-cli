@@ -348,6 +348,13 @@ def validate_pool(
 
 
 def main() -> None:
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print("alph-mcp: AlpheusCEF MCP server (stdio transport)")
+        print("Usage: configure your MCP client to run 'alph-mcp' as a subprocess.")
+        print("       Do not run directly — it speaks MCP protocol over stdin/stdout.")
+        sys.exit(0)
     mcp.run()
 
 
