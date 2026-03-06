@@ -289,22 +289,22 @@ def validate_registry(config: dict[str, object]) -> ValidationResult:
 # ---------------------------------------------------------------------------
 
 
-def generate_id(*, timestamp: str, source: str, context: str) -> str:
+def generate_id(*, source: str, context: str) -> str:
     """Generate a deterministic 12-character node ID.
 
     The ID is the first 12 hex characters of SHA-256 over the concatenation
-    of timestamp, source, and context. Identical inputs always produce the
-    same ID, enabling idempotency checks.
+    of source and context. Timestamp is intentionally excluded so that
+    submitting the same context twice (e.g. re-running a CLI command)
+    produces the same ID and triggers the duplicate check.
 
     Args:
-        timestamp: ISO-8601 creation timestamp.
         source: Originating system (e.g. ``"cli"``, ``"slack"``).
         context: Human/LLM-readable context description.
 
     Returns:
         12-character lowercase hex string.
     """
-    raw = f"{timestamp}{source}{context}"
+    raw = f"{source}{context}"
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
@@ -844,7 +844,7 @@ def create_node(
         writing a new file.
     """
     resolved_timestamp = timestamp or datetime.now(UTC).isoformat()
-    node_id = generate_id(timestamp=resolved_timestamp, source=source, context=context)
+    node_id = generate_id(source=source, context=context)
     logger.debug("create_node: id=%s type=%s pool=%s", node_id, node_type, pool_path)
 
     existing = check_idempotency(pool_path, node_id)
