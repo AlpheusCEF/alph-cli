@@ -22,6 +22,7 @@ from alph.core import (
     load_config,
     load_state,
     resolve_default_pool,
+    resolve_pool_name,
     show_node,
     update_state,
     validate_node,
@@ -534,6 +535,66 @@ def test_resolve_default_pool_returns_none_when_no_default_pool(tmp_path: Path) 
         registries={"household": RegistryEntry(home="/registries/household")},
     )
     assert resolve_default_pool(config) is None
+
+
+def test_resolve_pool_name_finds_pool_in_default_registry(tmp_path: Path) -> None:
+    """resolve_pool_name returns registry_home/name when pool exists in the default registry."""
+    reg_home = tmp_path / "registry"
+    config = AlphConfig(
+        default_registry="household",
+        registries={
+            "household": RegistryEntry(
+                home=str(reg_home),
+                pools={"vehicles": {"context": "Cars", "type": "subdir"}},
+            )
+        },
+    )
+    assert resolve_pool_name("vehicles", config) == reg_home / "vehicles"
+
+
+def test_resolve_pool_name_returns_none_when_not_found(tmp_path: Path) -> None:
+    """resolve_pool_name returns None when no registry has the named pool."""
+    reg_home = tmp_path / "registry"
+    config = AlphConfig(
+        default_registry="household",
+        registries={
+            "household": RegistryEntry(home=str(reg_home), pools={"vehicles": {"context": "Cars"}}),
+        },
+    )
+    assert resolve_pool_name("appliances", config) is None
+
+
+def test_resolve_pool_name_checks_default_registry_first(tmp_path: Path) -> None:
+    """resolve_pool_name prefers the default registry when the name exists in multiple."""
+    reg_a = tmp_path / "reg-a"
+    reg_b = tmp_path / "reg-b"
+    config = AlphConfig(
+        default_registry="reg-b",
+        registries={
+            "reg-a": RegistryEntry(home=str(reg_a), pools={"tools": {"context": "A tools"}}),
+            "reg-b": RegistryEntry(home=str(reg_b), pools={"tools": {"context": "B tools"}}),
+        },
+    )
+    assert resolve_pool_name("tools", config) == reg_b / "tools"
+
+
+def test_init_pool_stores_type_not_layout(tmp_path: Path) -> None:
+    """init_pool stores 'type' (not 'layout') and omits 'path' in pool metadata."""
+    global_dir = tmp_path / "global"
+    init_registry(home=tmp_path, registry_id="reg-01", context="Test", global_config_dir=global_dir)
+    init_pool(
+        registry_id="reg-01",
+        name="vehicles",
+        context="Cars",
+        pool_type="subdir",
+        cwd=tmp_path,
+        global_config_dir=global_dir,
+    )
+    config = yaml.safe_load((global_dir / "config.yaml").read_text())
+    pool_meta = config["registries"]["reg-01"]["pools"]["vehicles"]
+    assert pool_meta["type"] == "subdir"
+    assert "layout" not in pool_meta
+    assert "path" not in pool_meta
 
 
 def test_create_node_auto_commits_when_auto_commit_is_true(tmp_path: Path) -> None:

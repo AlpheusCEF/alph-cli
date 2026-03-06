@@ -592,6 +592,30 @@ def resolve_default_pool(config: AlphConfig) -> Path | None:
     return Path(entry.home) / config.default_pool
 
 
+def resolve_pool_name(name: str, cfg: AlphConfig) -> Path | None:
+    """Resolve a pool name to its filesystem path via the registry config.
+
+    Checks the default registry first, then all other known registries.
+    Pool path is always ``registry_home / pool_name`` — the ``path`` field
+    in pool metadata is ignored (it is redundant by convention).
+
+    Args:
+        name: Pool name to look up.
+        cfg: Merged config from ``load_config``.
+
+    Returns:
+        Absolute path to the pool directory, or None if not found.
+    """
+    registries_ordered = list(cfg.registries.items())
+    if cfg.default_registry:
+        registries_ordered.sort(key=lambda kv: 0 if kv[0] == cfg.default_registry else 1)
+
+    for _reg_id, entry in registries_ordered:
+        if isinstance(entry.pools, dict) and name in entry.pools:
+            return Path(entry.home) / name
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Registry and pool initialisation
 # ---------------------------------------------------------------------------
@@ -669,7 +693,7 @@ def init_pool(
     registry_id: str,
     name: str,
     context: str,
-    layout: str = "subdirectory",
+    pool_type: str = "subdir",
     cwd: Path,
     global_config_dir: Path,
     bootstrap: bool = False,
@@ -686,7 +710,8 @@ def init_pool(
         registry_id: Registry ID or name to attach the pool to.
         name: Pool name (machine identifier, used as directory name).
         context: Human/LLM-readable description.
-        layout: ``"subdirectory"`` (default) or ``"repo"``.
+        pool_type: ``"subdir"`` (default, pool is a subdirectory of the registry home)
+            or ``"repo"`` (pool is a standalone git repository).
         cwd: Starting directory for the registry config walk-up.
         global_config_dir: Global alph config directory (fallback for lookup).
         bootstrap: When True, create the registry at ``cwd`` if not found.
@@ -749,7 +774,7 @@ def init_pool(
     pools = reg_entry.get("pools", {})
     if not isinstance(pools, dict):
         pools = {}
-    pools[name] = {"context": context, "layout": layout, "path": f"./{name}"}
+    pools[name] = {"context": context, "type": pool_type}
     reg_entry["pools"] = pools
     global_registries[actual_reg_id] = reg_entry
     global_data["registries"] = global_registries

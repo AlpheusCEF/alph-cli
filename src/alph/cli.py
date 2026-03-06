@@ -21,6 +21,7 @@ from alph.core import (
     list_nodes,
     load_config,
     resolve_default_pool,
+    resolve_pool_name,
     show_node,
     validate_node,
 )
@@ -66,10 +67,26 @@ def _load_cli_config(cwd: Path | None = None) -> AlphConfig:
     )
 
 
-def _require_pool(pool_flag: Path | None, cfg: AlphConfig) -> Path:
-    """Resolve pool path from flag or config default. Exits with error if neither is set."""
+def _require_pool(pool_flag: str | None, cfg: AlphConfig) -> Path:
+    """Resolve pool path from flag or config default. Exits with error if neither is set.
+
+    The flag value is resolved in order:
+    1. Absolute path or existing relative path — used as-is.
+    2. Pool name found in a registry — resolved to registry_home/name.
+    3. Falls back to default_registry/default_pool from config.
+    """
     if pool_flag is not None:
-        return pool_flag
+        p = Path(pool_flag)
+        if p.is_absolute() or p.exists():
+            return p
+        by_name = resolve_pool_name(pool_flag, cfg)
+        if by_name is not None:
+            return by_name
+        console.print(
+            f"[red]error:[/red] --pool '{pool_flag}' is not a path and was not found "
+            "as a pool name in any known registry"
+        )
+        raise typer.Exit(code=1)
     resolved = resolve_default_pool(cfg)
     if resolved is None:
         console.print(
@@ -155,7 +172,7 @@ def pool_init(
     registry: str | None = typer.Option(None, "--registry", help="Registry ID or name. Defaults to default_registry from config."),
     name: str = typer.Option(..., "--name", help="Pool name (machine identifier)."),
     context: str = typer.Option(..., "--context", "-c", help="Human/LLM-readable description."),
-    layout: str = typer.Option("subdirectory", "--layout", help="'subdirectory' or 'repo'."),
+    pool_type: str = typer.Option("subdir", "--type", help="Pool type: 'subdir' (pool is a subdirectory of the registry home) or 'repo' (standalone git repository)."),
     cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for registry lookup."),
     bootstrap: bool = typer.Option(False, "--bootstrap", hidden=True, help="Create registry if not found."),
     registry_context: str = typer.Option("", "--registry-context", hidden=True, help="Context for bootstrapped registry."),
@@ -183,7 +200,7 @@ def pool_init(
         registry_id=registry_id,
         name=name,
         context=context,
-        layout=layout,
+        pool_type=pool_type,
         cwd=resolved_cwd,
         global_config_dir=_global_config_dir(),
         bootstrap=bootstrap,
@@ -214,7 +231,7 @@ def pool_init(
 @app.command("add")
 def cmd_add(
     context: str = typer.Option(..., "-c", "--context", help="Context description for this node."),
-    pool: Path | None = typer.Option(None, "--pool", help="Path to the pool directory. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
     creator: str | None = typer.Option(None, "--creator", help="Creator email address. Defaults to creator from config."),
     node_type: str = typer.Option("fixed", "--type", help="'fixed' or 'live'."),
     content: str = typer.Option("", "--content", help="Optional Markdown body."),
@@ -246,7 +263,7 @@ def cmd_add(
 
 @app.command("list")
 def cmd_list(
-    pool: Path | None = typer.Option(None, "--pool", help="Path to the pool directory. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
     status: list[str] = typer.Option(
         [],
         "-s",
@@ -289,7 +306,7 @@ def cmd_list(
 @app.command("show")
 def cmd_show(
     node_id: str = typer.Argument(..., help="Node ID to display."),
-    pool: Path | None = typer.Option(None, "--pool", help="Path to the pool directory. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
 ) -> None:
     """Display full node content formatted for terminal."""
     cfg = _load_cli_config()
@@ -314,7 +331,7 @@ def cmd_show(
 
 @app.command("validate")
 def cmd_validate(
-    pool: Path | None = typer.Option(None, "--pool", help="Path to the pool directory. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
 ) -> None:
     """Check all nodes in a pool against schema."""
     cfg = _load_cli_config()
