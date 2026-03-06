@@ -2,12 +2,15 @@
 
 import hashlib
 import json
+import logging
 import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -324,7 +327,9 @@ def load_config(
 
     def _apply(config_path: Path) -> None:
         if not config_path.exists():
+            logger.debug("config not found, skipping: %s", config_path)
             return
+        logger.debug("applying config: %s", config_path)
         data = yaml.safe_load(config_path.read_text()) or {}
         if not isinstance(data, dict):
             return
@@ -359,6 +364,14 @@ def load_config(
         for config_path in reversed(walk_paths):
             _apply(config_path)
 
+    logger.debug(
+        "config loaded: creator=%r default_registry=%r default_pool=%r registries=%s",
+        merged.get("creator", ""),
+        merged.get("default_registry", ""),
+        merged.get("default_pool", ""),
+        list(accumulated_registries.keys()),
+    )
+
     if overrides:
         merged.update(overrides)
 
@@ -391,9 +404,12 @@ def find_registry_config(
     """
     # Fast path: lookup by ID.
     if registry_id_or_name in cfg.registries:
-        return (registry_id_or_name, Path(cfg.registries[registry_id_or_name]))
+        home = Path(cfg.registries[registry_id_or_name])
+        logger.debug("registry found by ID: %r -> %s", registry_id_or_name, home)
+        return (registry_id_or_name, home)
 
     # Slow path: lookup by name — check each home config for a matching name.
+    logger.debug("registry %r not found by ID, trying name lookup", registry_id_or_name)
     for reg_id, home_str in cfg.registries.items():
         home = Path(home_str)
         home_config = home / "config.yaml"
@@ -828,9 +844,11 @@ def create_node(
     """
     resolved_timestamp = timestamp or datetime.now(UTC).isoformat()
     node_id = generate_id(timestamp=resolved_timestamp, source=source, context=context)
+    logger.debug("create_node: id=%s type=%s pool=%s", node_id, node_type, pool_path)
 
     existing = check_idempotency(pool_path, node_id)
     if existing is not None:
+        logger.debug("create_node: duplicate detected, created by %r", existing.creator)
         subdir = "snapshots" if node_type == "fixed" else "pointers"
         path = pool_path / subdir / f"{node_id}.md"
         return NodeResult(

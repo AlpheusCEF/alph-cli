@@ -1,5 +1,6 @@
 """Thin Typer wrapper exposing core.py as the `alph` CLI."""
 
+import logging
 import os
 from pathlib import Path
 
@@ -34,6 +35,21 @@ app.add_typer(pool_app, name="pool")
 app.add_typer(config_app, name="config")
 
 console = Console(width=200)
+
+_verbose: bool = False
+
+
+@app.callback()
+def _main(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging.", is_eager=False),
+) -> None:
+    """Alpheus Context Engine Framework."""
+    global _verbose
+    _verbose = verbose
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.WARNING,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
 
 
 def _global_config_dir() -> Path:
@@ -341,10 +357,14 @@ def config_list(
     table.add_column("type", width=8)
     table.add_column("registries")
     for s in summaries:
+        if _verbose and not s.is_global:
+            display_path = os.path.relpath(s.path, resolved_cwd)
+        else:
+            display_path = str(s.path)
         status = "[green]exists[/green]" if s.exists else "[dim]missing[/dim]"
         kind = "[cyan]global[/cyan]" if s.is_global else "local"
         reg_ids = ", ".join(s.registry_ids) if s.registry_ids else "[dim]—[/dim]"
-        table.add_row(str(s.path), status, kind, reg_ids)
+        table.add_row(display_path, status, kind, reg_ids)
     console.print(table)
     console.print(
         "\n[dim]global config is read first (base); "
