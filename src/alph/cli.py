@@ -16,9 +16,10 @@ from alph.core import (
     validate_node,
 )
 
-app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.")
-registry_app = typer.Typer(help="Registry commands.")
-pool_app = typer.Typer(help="Pool commands.")
+_help_settings = {"help_option_names": ["-h", "--help"]}
+app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.", context_settings=_help_settings)
+registry_app = typer.Typer(help="Registry commands.", context_settings=_help_settings)
+pool_app = typer.Typer(help="Pool commands.", context_settings=_help_settings)
 app.add_typer(registry_app, name="registry")
 app.add_typer(pool_app, name="pool")
 
