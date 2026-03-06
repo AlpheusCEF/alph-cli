@@ -1,7 +1,8 @@
 """Shared pytest fixtures for alph tests."""
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 
 @pytest.fixture(autouse=True)
