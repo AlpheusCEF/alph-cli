@@ -662,27 +662,45 @@ def test_create_node_returns_duplicate_error_when_node_exists(tmp_path: Path) ->
     assert result.existing_creator == "chase@example.com"
 
 
+def test_create_node_deduplicates_without_explicit_timestamp(tmp_path: Path) -> None:
+    """Calling create_node twice with the same source+context but no timestamp deduplicates.
+
+    This is the real-world CLI case: no timestamp is supplied, so datetime.now()
+    is called each time. The ID must still match because timestamp is not part
+    of the identity hash.
+    """
+    pool = _make_pool(tmp_path)
+    kwargs = dict(
+        pool_path=pool,
+        source="cli",
+        node_type="fixed",
+        context="Purchased 2022 Subaru Outback Wilderness",
+        creator="test@example.com",
+    )
+    first = create_node(**kwargs)  # type: ignore[arg-type]
+    second = create_node(**kwargs)  # type: ignore[arg-type]
+    assert second.duplicate is True
+    assert second.node_id == first.node_id
+    assert second.existing_creator == "test@example.com"
+
+
 def test_generate_id_returns_12_char_hex() -> None:
     """generate_id returns a 12-character lowercase hex string."""
-    node_id = generate_id(
-        timestamp="2026-03-05T10:00:00Z",
-        source="cli",
-        context="Oil change at Valvoline",
-    )
+    node_id = generate_id(source="cli", context="Oil change at Valvoline")
     assert len(node_id) == 12
     assert all(c in "0123456789abcdef" for c in node_id)
 
 
 def test_generate_id_is_deterministic() -> None:
     """generate_id returns the same ID for the same inputs."""
-    kwargs = {"timestamp": "2026-03-05T10:00:00Z", "source": "cli", "context": "Oil change"}
+    kwargs = {"source": "cli", "context": "Oil change"}
     assert generate_id(**kwargs) == generate_id(**kwargs)
 
 
 def test_generate_id_differs_for_different_inputs() -> None:
     """generate_id returns different IDs for different context values."""
-    id1 = generate_id(timestamp="2026-03-05T10:00:00Z", source="cli", context="Oil change")
-    id2 = generate_id(timestamp="2026-03-05T10:00:00Z", source="cli", context="Brake check")
+    id1 = generate_id(source="cli", context="Oil change")
+    id2 = generate_id(source="cli", context="Brake check")
     assert id1 != id2
 
 
