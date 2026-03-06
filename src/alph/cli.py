@@ -39,18 +39,26 @@ console = Console(width=200)
 
 _verbose: bool = False
 
+_VERBOSE_OPT = typer.Option(False, "--verbose", "-v", help="Enable debug logging.")
+
+
+def _apply_verbose(verbose: bool) -> None:
+    """Enable DEBUG logging and set _verbose flag. No-op if verbose=False."""
+    global _verbose
+    if verbose:
+        _verbose = True
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(name)s: %(message)s")
+        logging.getLogger().setLevel(logging.DEBUG)
+
 
 @app.callback()
 def _main(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging.", is_eager=False),
 ) -> None:
     """Alpheus Context Engine Framework."""
-    global _verbose
-    _verbose = verbose
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.WARNING,
-        format="%(levelname)s %(name)s: %(message)s",
-    )
+    if not logging.root.handlers:
+        logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    _apply_verbose(verbose)
 
 
 def _global_config_dir() -> Path:
@@ -113,6 +121,7 @@ def registry_init(
     registry_id: str = typer.Option(..., "--id", help="Machine identifier for the registry."),
     context: str = typer.Option(..., "--context", "-c", help="Human/LLM-readable description."),
     name: str = typer.Option("", "--name", help="Optional human-readable name."),
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Create a registry home directory and register it in the global config.
 
@@ -125,6 +134,7 @@ def registry_init(
     'alph add' and 'alph list' to work without --pool or --creator flags
     (once creator and default_pool are also configured).
     """
+    _apply_verbose(verbose)
     result = init_registry(
         home=home,
         registry_id=registry_id,
@@ -148,8 +158,10 @@ def registry_init(
 @registry_app.command("list")
 def registry_list(
     cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for config lookup."),
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """List all registries known to alph from the config file tree."""
+    _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
     cfg = _load_cli_config(cwd=resolved_cwd)
     summaries = collect_registries(cfg=cfg)
@@ -176,6 +188,7 @@ def pool_init(
     cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for registry lookup."),
     bootstrap: bool = typer.Option(False, "--bootstrap", hidden=True, help="Create registry if not found."),
     registry_context: str = typer.Option("", "--registry-context", hidden=True, help="Context for bootstrapped registry."),
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Create a pool inside a registry, register it, and validate it.
 
@@ -183,6 +196,7 @@ def pool_init(
     directory (or --cwd) and checking the global config. Use
     'alph registry list' to see which registries are known.
     """
+    _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
     cfg = _load_cli_config(cwd=resolved_cwd)
 
@@ -236,8 +250,10 @@ def cmd_add(
     node_type: str = typer.Option("fixed", "--type", help="'fixed' or 'live'."),
     content: str = typer.Option("", "--content", help="Optional Markdown body."),
     status: str | None = typer.Option(None, "--status", help="active, archived, or suppressed."),
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Create a context node in a pool."""
+    _apply_verbose(verbose)
     cfg = _load_cli_config()
     resolved_pool = _require_pool(pool, cfg)
     resolved_creator = _require_creator(creator, cfg)
@@ -270,6 +286,7 @@ def cmd_list(
         "--status",
         help="Expand beyond active: archived, suppressed, or all.",
     ),
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """List nodes in a pool with frontmatter summary.
 
@@ -278,6 +295,7 @@ def cmd_list(
     -s suppressed includes active + suppressed
     -s all        includes everything
     """
+    _apply_verbose(verbose)
     cfg = _load_cli_config()
     resolved_pool = _require_pool(pool, cfg)
 
@@ -307,8 +325,10 @@ def cmd_list(
 def cmd_show(
     node_id: str = typer.Argument(..., help="Node ID to display."),
     pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Display full node content formatted for terminal."""
+    _apply_verbose(verbose)
     cfg = _load_cli_config()
     resolved_pool = _require_pool(pool, cfg)
     detail = show_node(resolved_pool, node_id)
@@ -332,16 +352,25 @@ def cmd_show(
 @app.command("validate")
 def cmd_validate(
     pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Check all nodes in a pool against schema."""
+    _apply_verbose(verbose)
     cfg = _load_cli_config()
     resolved_pool = _require_pool(pool, cfg)
+
+    if not resolved_pool.exists():
+        console.print(f"[red]error:[/red] pool directory not found: {resolved_pool}")
+        raise typer.Exit(code=1)
+
     errors_found = False
+    node_count = 0
     for subdir in ("snapshots", "pointers"):
         directory = resolved_pool / subdir
         if not directory.exists():
             continue
         for node_file in sorted(directory.glob("*.md")):
+            node_count += 1
             frontmatter = extract_frontmatter(node_file.read_text())
             if frontmatter is None:
                 console.print(f"[red]no frontmatter:[/red] {node_file.name}")
@@ -352,15 +381,18 @@ def cmd_validate(
                 errors_found = True
                 for error in vresult.errors:
                     console.print(f"[red]invalid:[/red] {node_file.name}: {error}")
-    if not errors_found:
-        console.print("[green]all nodes valid.[/green]")
-    else:
+    if errors_found:
         raise typer.Exit(code=1)
+    if node_count == 0:
+        console.print("no nodes found.")
+    else:
+        console.print("[green]all nodes valid.[/green]")
 
 
 @config_app.command("list")
 def config_list(
     cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for config path walk."),
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """List all config files in the discovery tree.
 
@@ -368,6 +400,7 @@ def config_list(
     plus every config.yaml found walking up from the current directory. Each
     entry shows whether the file exists and which registry IDs it declares.
     """
+    _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
     summaries = list_config_paths(global_config_dir=_global_config_dir(), cwd=resolved_cwd)
     table = Table(show_header=True, header_style="bold")
@@ -394,6 +427,7 @@ def config_list(
 @config_app.command("show")
 def config_show(
     config_path: Path = typer.Argument(..., help="Path to a config.yaml file to display."),
+    verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Display a config file with syntax highlighting.
 
@@ -401,6 +435,7 @@ def config_show(
     If the file does not exist, a commented template is shown along with
     instructions for bootstrapping a registry at the same location.
     """
+    _apply_verbose(verbose)
     if config_path.exists():
         console.print(f"[bold]{config_path}[/bold]\n")
         console.print(Syntax(config_path.read_text(), "yaml", theme="monokai", line_numbers=False))
@@ -417,3 +452,10 @@ def config_show(
             "as the default. Or create the config file manually using this template:\n"
         )
         console.print(Syntax(default_global_config_text(), "yaml", theme="monokai", line_numbers=False))
+
+
+# Short command aliases (hidden from --help)
+app.command("l", hidden=True)(cmd_list)
+app.command("a", hidden=True)(cmd_add)
+app.command("s", hidden=True)(cmd_show)
+app.command("v", hidden=True)(cmd_validate)
