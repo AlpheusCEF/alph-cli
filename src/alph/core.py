@@ -99,6 +99,7 @@ class RegistryResult:
     config_path: Path
     valid: bool
     errors: list[str] = field(default_factory=list)
+    set_as_default: bool = False
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,27 @@ class PoolResult:
     pool_path: Path
     valid: bool
     errors: list[str] = field(default_factory=list)
+    config_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class RegistrySummary:
+    """A registry entry as collected from a config file, for display."""
+
+    registry_id: str
+    name: str
+    context: str
+    config_path: Path
+
+
+@dataclass(frozen=True)
+class ConfigPathSummary:
+    """Metadata about a single config file path in the discovery tree."""
+
+    path: Path
+    exists: bool
+    is_global: bool
+    registry_ids: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -270,18 +292,28 @@ def generate_id(*, timestamp: str, source: str, context: str) -> str:
 def load_config(
     *,
     global_config_dir: Path,
-    pool_path: Path,
+    cwd: Path | None = None,
     overrides: dict[str, object] | None = None,
 ) -> AlphConfig:
-    """Load and merge configuration from global, pool, and CLI layers.
+    """Load and merge configuration from the global config and the cwd directory tree.
 
-    Priority (highest wins): CLI overrides > pool config > global config > defaults.
+    Priority (highest wins): CLI overrides > cwd-nearest config > ... > global config > defaults.
+
+    The config tree is:
+    - ``global_config_dir/config.yaml`` — base layer, read first
+    - Walk-up from ``cwd`` to root: each ``config.yaml`` found is applied in
+      order from least specific (root) to most specific (cwd), so the cwd-nearest
+      file wins for scalar values like ``creator`` and ``default_pool``.
+
+    Registry entries accumulate across all files. When the same ID appears in
+    multiple files, the most-specific (cwd-nearest) path wins. Registry entries
+    in dict format ``{id: {context: ...}}`` (registry-home configs) are resolved
+    to the containing directory as the registry home path.
 
     Args:
         global_config_dir: Directory containing the global ``config.yaml``
             (typically ``~/.config/alph/``).
-        pool_path: Root of the pool; pool config lives at
-            ``<pool_path>/.alph/config.yaml``.
+        cwd: Starting directory for the upward walk. Defaults to no walk.
         overrides: Per-invocation overrides (from CLI flags).
 
     Returns:
@@ -290,20 +322,42 @@ def load_config(
     merged: dict[str, object] = {}
     accumulated_registries: dict[str, str] = {}
 
-    for config_path in (
-        global_config_dir / "config.yaml",
-        pool_path / ".alph" / "config.yaml",
-    ):
-        if config_path.exists():
-            data = yaml.safe_load(config_path.read_text()) or {}
-            if isinstance(data, dict):
-                # Accumulate registries separately so later files add to the
-                # map rather than replacing it entirely.
-                if isinstance(data.get("registries"), dict):
-                    accumulated_registries.update(
-                        {str(k): str(v) for k, v in data["registries"].items()}
-                    )
-                merged.update({k: v for k, v in data.items() if k != "registries"})
+    def _apply(config_path: Path) -> None:
+        if not config_path.exists():
+            return
+        data = yaml.safe_load(config_path.read_text()) or {}
+        if not isinstance(data, dict):
+            return
+        # Accumulate registries: path-string format goes in directly;
+        # dict format (registry home config) uses the config file's parent as home.
+        regs = data.get("registries", {})
+        if isinstance(regs, dict):
+            for k, v in regs.items():
+                if isinstance(v, str):
+                    accumulated_registries[str(k)] = v
+                elif isinstance(v, dict):
+                    accumulated_registries[str(k)] = str(config_path.parent)
+        merged.update({k: v for k, v in data.items() if k != "registries"})
+
+    # Global config is the base layer.
+    global_config = global_config_dir / "config.yaml"
+    _apply(global_config)
+
+    if cwd is not None:
+        # Collect paths from cwd up to root, then reverse so root→cwd order
+        # means cwd is applied last (most specific wins).
+        walk_paths: list[Path] = []
+        current = Path(cwd)
+        while True:
+            p = current / "config.yaml"
+            if p != global_config:
+                walk_paths.append(p)
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+        for config_path in reversed(walk_paths):
+            _apply(config_path)
 
     if overrides:
         merged.update(overrides)
@@ -315,6 +369,195 @@ def load_config(
         default_pool=str(merged.get("default_pool", "")),
         registries=accumulated_registries,
     )
+
+
+def find_registry_config(
+    registry_id_or_name: str,
+    *,
+    cfg: AlphConfig,
+) -> tuple[str, Path] | None:
+    """Find a registry by ID or name from a loaded config.
+
+    Looks up the registry in ``cfg.registries`` (populated by ``load_config``).
+    For name-based lookup, reads each registry's home ``config.yaml`` to check
+    the declared name.
+
+    Args:
+        registry_id_or_name: Registry ID or human-readable name to look up.
+        cfg: Merged config from ``load_config``.
+
+    Returns:
+        ``(actual_registry_id, home_path)`` if found, ``None`` otherwise.
+    """
+    # Fast path: lookup by ID.
+    if registry_id_or_name in cfg.registries:
+        return (registry_id_or_name, Path(cfg.registries[registry_id_or_name]))
+
+    # Slow path: lookup by name — check each home config for a matching name.
+    for reg_id, home_str in cfg.registries.items():
+        home = Path(home_str)
+        home_config = home / "config.yaml"
+        if not home_config.exists():
+            continue
+        try:
+            data = yaml.safe_load(home_config.read_text()) or {}
+            if not isinstance(data, dict):
+                continue
+            regs = data.get("registries", {})
+            if not isinstance(regs, dict) or reg_id not in regs:
+                continue
+            entry = regs[reg_id]
+            if isinstance(entry, dict) and entry.get("name") == registry_id_or_name:
+                return (reg_id, home)
+        except Exception:
+            pass
+
+    return None
+
+
+def collect_registries(
+    *,
+    cfg: AlphConfig,
+) -> list[RegistrySummary]:
+    """Return display summaries for all registries in the loaded config.
+
+    For each registry in ``cfg.registries``, reads the registry home
+    ``config.yaml`` to extract context and name.
+
+    Args:
+        cfg: Merged config from ``load_config``.
+
+    Returns:
+        List of RegistrySummary, one per entry in cfg.registries.
+    """
+    results: list[RegistrySummary] = []
+    for reg_id, home_str in cfg.registries.items():
+        home = Path(home_str)
+        name = ""
+        context = ""
+        config_path = home / "config.yaml"
+        if config_path.exists():
+            try:
+                data = yaml.safe_load(config_path.read_text()) or {}
+                if isinstance(data, dict):
+                    regs = data.get("registries", {})
+                    if isinstance(regs, dict) and reg_id in regs:
+                        entry = regs[reg_id]
+                        if isinstance(entry, dict):
+                            name = str(entry.get("name", ""))
+                            context = str(entry.get("context", ""))
+            except Exception:
+                pass
+        results.append(RegistrySummary(
+            registry_id=reg_id,
+            name=name,
+            context=context,
+            config_path=config_path,
+        ))
+    return results
+
+
+def list_config_paths(
+    *,
+    global_config_dir: Path,
+    cwd: Path,
+) -> list[ConfigPathSummary]:
+    """Return all config file paths in the discovery tree, with metadata.
+
+    The list mirrors the order ``load_config`` applies configs: global first
+    (base), then the walk-up from root → cwd (most specific last). Each entry
+    reports whether the file exists on disk and which registry IDs it declares.
+
+    Args:
+        global_config_dir: Global alph config directory.
+        cwd: Starting directory for the upward walk.
+
+    Returns:
+        List of ConfigPathSummary, one per path that load_config would check.
+    """
+    global_config = global_config_dir / "config.yaml"
+
+    # Collect cwd walk paths (cwd → root), then reverse to get root → cwd.
+    walk_paths: list[Path] = []
+    current = Path(cwd)
+    while True:
+        p = current / "config.yaml"
+        if p != global_config:
+            walk_paths.append(p)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    ordered: list[Path] = [global_config, *reversed(walk_paths)]
+
+    def _registry_ids(path: Path) -> list[str]:
+        if not path.exists():
+            return []
+        try:
+            data = yaml.safe_load(path.read_text()) or {}
+            if not isinstance(data, dict):
+                return []
+            regs = data.get("registries", {})
+            return [str(k) for k in regs] if isinstance(regs, dict) else []
+        except Exception:
+            return []
+
+    return [
+        ConfigPathSummary(
+            path=p,
+            exists=p.exists(),
+            is_global=(p == global_config),
+            registry_ids=_registry_ids(p),
+        )
+        for p in ordered
+    ]
+
+
+def default_global_config_text() -> str:
+    """Return a commented YAML template for a new global alph config file.
+
+    All standard keys are included with their defaults and a description
+    comment above each one. Intended for first-time setup and ``alph config
+    show`` output when no config file exists yet.
+
+    Returns:
+        Multi-line string of valid YAML with inline documentation comments.
+    """
+    return """\
+# alph global configuration
+# Location: ~/.config/alph/config.yaml
+#
+# Run 'alph config list' to see all config files in the discovery tree.
+# Run 'alph registry init' to create a registry and populate this file.
+
+# Your email address used as the default creator for new nodes.
+# Omitting --creator on 'alph add' requires this to be set.
+# Default: "" (empty — --creator must be supplied on each command)
+creator: ""
+
+# The registry ID that 'alph add' and 'alph list' resolve when
+# no --pool flag is given. Set automatically by 'alph registry init'
+# when no default exists yet.
+# Default: "" (no default registry)
+default_registry: ""
+
+# The pool name within default_registry used when no --pool flag is given.
+# Set automatically by 'alph pool init' for the first pool in the default registry.
+# Default: "" (no default pool)
+default_pool: ""
+
+# Registry map: ID → path to the registry home directory.
+# Populated automatically by 'alph registry init'.
+# You can add entries manually for registries not managed by this machine.
+# Default: {} (empty map)
+registries: {}
+
+# When true, 'alph add' commits each new node to git automatically.
+# Requires the pool directory to be inside a git repository.
+# Default: false
+auto_commit: false
+"""
 
 
 def resolve_default_pool(config: AlphConfig) -> Path | None:
@@ -338,70 +581,150 @@ def resolve_default_pool(config: AlphConfig) -> Path | None:
 
 def init_registry(
     *,
-    path: Path,
+    home: Path,
     registry_id: str,
     context: str,
     name: str = "",
+    global_config_dir: Path | None = None,
 ) -> RegistryResult:
-    """Create a registry directory and write its config.yaml.
+    """Create a registry home directory and write its local config.yaml.
+
+    When ``global_config_dir`` is provided, the registry is also registered
+    in the global config (``registries`` map) so ``load_config`` can resolve
+    it. If no ``default_registry`` is set globally, this registry becomes the
+    default.
 
     Args:
-        path: Directory to create as the registry root.
+        home: Directory to create as the registry root. Pool subdirectories
+            will be created inside it. A ``config.yaml`` with the registry
+            metadata is written here.
         registry_id: Machine identifier for the registry.
         context: Human/LLM-readable description.
         name: Optional human-readable name.
+        global_config_dir: Global alph config directory. When provided, the
+            registry path is added to the global ``registries`` map and
+            ``default_registry`` is set if none exists.
 
     Returns:
-        RegistryResult with config_path and validation outcome.
+        RegistryResult with config_path, validation outcome, and set_as_default.
     """
-    path.mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
 
     registry_entry: dict[str, object] = {"context": context}
     if name:
         registry_entry["name"] = name
 
-    config: dict[str, object] = {
+    local_config: dict[str, object] = {
         "registries": {registry_id: registry_entry},
         "pools": {},
     }
-    config_path = path / "config.yaml"
-    config_path.write_text(yaml.dump(config, default_flow_style=False, allow_unicode=True))
+    config_path = home / "config.yaml"
+    config_path.write_text(yaml.dump(local_config, default_flow_style=False, allow_unicode=True))
 
-    validation = validate_registry(config)
+    set_as_default = False
+    if global_config_dir is not None:
+        global_config_dir.mkdir(parents=True, exist_ok=True)
+        global_config_path = global_config_dir / "config.yaml"
+        global_data: dict[str, object] = {}
+        if global_config_path.exists():
+            loaded = yaml.safe_load(global_config_path.read_text()) or {}
+            if isinstance(loaded, dict):
+                global_data = loaded
+
+        # Register this registry's home path so load_config can build the map.
+        global_registries = global_data.get("registries", {})
+        if not isinstance(global_registries, dict):
+            global_registries = {}
+        global_registries[registry_id] = str(home)
+        global_data["registries"] = global_registries
+
+        # Set as default if none exists.
+        if not global_data.get("default_registry"):
+            global_data["default_registry"] = registry_id
+            set_as_default = True
+
+        global_config_path.write_text(
+            yaml.dump(global_data, default_flow_style=False, allow_unicode=True)
+        )
+
+    validation = validate_registry(local_config)
     return RegistryResult(
         config_path=config_path,
         valid=validation.valid,
         errors=validation.errors,
+        set_as_default=set_as_default,
     )
 
 
 def init_pool(
     *,
-    registry_path: Path,
+    registry_id: str,
     name: str,
     context: str,
     layout: str = "subdirectory",
+    cwd: Path,
+    global_config_dir: Path,
+    bootstrap: bool = False,
+    registry_context: str = "",
 ) -> PoolResult:
     """Create a pool and register it in the registry config.
 
+    Looks up the registry by ID or name using ``find_registry_config``, which
+    walks up from ``cwd`` and falls back to ``global_config_dir``. When
+    ``bootstrap=True`` and the registry is not found, it is created at ``cwd``
+    before the pool is built.
+
     Args:
-        registry_path: Root directory of the parent registry.
+        registry_id: Registry ID or name to attach the pool to.
         name: Pool name (machine identifier, used as directory name).
         context: Human/LLM-readable description.
         layout: ``"subdirectory"`` (default) or ``"repo"``.
+        cwd: Starting directory for the registry config walk-up.
+        global_config_dir: Global alph config directory (fallback for lookup).
+        bootstrap: When True, create the registry at ``cwd`` if not found.
+        registry_context: Context for the bootstrapped registry.
 
     Returns:
-        PoolResult with pool_path and validation outcome.
+        PoolResult with pool_path, config_path, and validation outcome.
+        Returns invalid result (with errors) if the registry is not found and
+        bootstrap is False.
     """
+    cfg = load_config(global_config_dir=global_config_dir, cwd=cwd)
+    found = find_registry_config(registry_id, cfg=cfg)
+
+    if found is None:
+        if bootstrap:
+            init_registry(
+                home=cwd,
+                registry_id=registry_id,
+                context=registry_context or f"Registry {registry_id}",
+                global_config_dir=global_config_dir,
+            )
+            cfg = load_config(global_config_dir=global_config_dir, cwd=cwd)
+            found = find_registry_config(registry_id, cfg=cfg)
+
+        if found is None:
+            return PoolResult(
+                pool_path=cwd / name,
+                valid=False,
+                errors=[
+                    f"registry '{registry_id}' not found. "
+                    "Run 'alph registry init' first, or use 'alph registry list' "
+                    "to see known registries."
+                ],
+            )
+
+    actual_reg_id, registry_path = found
+    config_file = registry_path / "config.yaml"
+
     pool_path = registry_path / name
     for subdir in ("snapshots", "pointers", ".alph"):
         (pool_path / subdir).mkdir(parents=True, exist_ok=True)
 
-    # Update registry config to include this pool
-    config_path = registry_path / "config.yaml"
+    # Update the registry config to include this pool.
     config: dict[str, object] = {}
-    if config_path.exists():
-        loaded = yaml.safe_load(config_path.read_text()) or {}
+    if config_file.exists():
+        loaded = yaml.safe_load(config_file.read_text()) or {}
         if isinstance(loaded, dict):
             config = loaded
 
@@ -410,13 +733,26 @@ def init_pool(
         pools = {}
     pools[name] = {"context": context, "layout": layout, "path": f"./{name}"}
     config["pools"] = pools
-    config_path.write_text(yaml.dump(config, default_flow_style=False, allow_unicode=True))
+    config_file.write_text(yaml.dump(config, default_flow_style=False, allow_unicode=True))
+
+    # If this is the default registry and no default_pool is set, register it.
+    global_config_path = global_config_dir / "config.yaml"
+    if global_config_path.exists():
+        global_data: dict[str, object] = yaml.safe_load(global_config_path.read_text()) or {}
+        if isinstance(global_data, dict):
+            default_reg = str(global_data.get("default_registry", ""))
+            if default_reg == actual_reg_id and not global_data.get("default_pool"):
+                global_data["default_pool"] = name
+                global_config_path.write_text(
+                    yaml.dump(global_data, default_flow_style=False, allow_unicode=True)
+                )
 
     validation = validate_registry(config)
     return PoolResult(
         pool_path=pool_path,
         valid=validation.valid,
         errors=validation.errors,
+        config_path=config_file,
     )
 
 

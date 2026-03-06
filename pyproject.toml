@@ -1,6 +1,6 @@
 [project]
 name = "alph-cli"
-version = "0.1.0"
+version = "0.1.1"
 description = "Alpheus Context Engine Framework CLI"
 authors = [
     {name = "Chase Pettet"}
@@ -51,6 +51,7 @@ ignore = ["B008"]  # typer.Option() in defaults is idiomatic Typer usage
 "src/alph/core.py" = ["E501"]      # docstrings and comments are intentionally long
 "src/alph/cli.py" = ["E501"]       # CLI help strings are intentionally long
 "src/alph/mcp_server.py" = ["E501"]  # MCP docstrings are intentionally long
+"tests/*.py" = ["E501"]            # test docstrings and inline data are intentionally long
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

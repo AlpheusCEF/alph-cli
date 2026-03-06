@@ -1,19 +1,22 @@
 """Behavior tests for alph core logic."""
 
+import subprocess
 from pathlib import Path
 
 import yaml
 
-import subprocess
-
 from alph.core import (
     AlphConfig,
     check_idempotency,
+    collect_registries,
     create_node,
+    default_global_config_text,
     extract_frontmatter,
+    find_registry_config,
     generate_id,
     init_pool,
     init_registry,
+    list_config_paths,
     list_nodes,
     load_config,
     load_state,
@@ -151,7 +154,7 @@ def test_show_node_returns_none_for_unknown_id(tmp_path: Path) -> None:
 def test_init_registry_creates_config_with_registry_declaration(tmp_path: Path) -> None:
     """init_registry creates a config.yaml containing the registry declaration."""
     result = init_registry(
-        path=tmp_path / "my-registry",
+        home=tmp_path / "my-registry",
         registry_id="reg-01",
         context="Personal context pools",
     )
@@ -163,21 +166,125 @@ def test_init_registry_creates_config_with_registry_declaration(tmp_path: Path) 
 def test_init_registry_validates_its_own_output(tmp_path: Path) -> None:
     """init_registry result passes registry validation."""
     result = init_registry(
-        path=tmp_path / "my-registry",
+        home=tmp_path / "my-registry",
         registry_id="reg-01",
         context="Personal context pools",
     )
     assert result.valid is True
 
 
+def test_init_registry_sets_default_when_no_existing_default(tmp_path: Path) -> None:
+    """init_registry writes default_registry and registry path into the GLOBAL config."""
+    global_dir = tmp_path / "global"
+    result = init_registry(
+        home=tmp_path / "my-registry",
+        registry_id="reg-01",
+        context="Test registry",
+        global_config_dir=global_dir,
+    )
+    assert result.set_as_default is True
+    # The global config should now have the registry path and the default.
+    global_config = yaml.safe_load((global_dir / "config.yaml").read_text())
+    assert global_config["default_registry"] == "reg-01"
+    assert "reg-01" in global_config["registries"]
+    # The registry's own config should NOT have default_registry.
+    local_config = yaml.safe_load(result.config_path.read_text())
+    assert "default_registry" not in local_config
+
+
+def test_init_registry_does_not_override_existing_default(tmp_path: Path) -> None:
+    """init_registry does not change default_registry when one already exists."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {"default_registry": "existing"})
+    result = init_registry(
+        home=tmp_path / "my-registry",
+        registry_id="reg-01",
+        context="Test registry",
+        global_config_dir=global_dir,
+    )
+    assert result.set_as_default is False
+    global_config = yaml.safe_load((global_dir / "config.yaml").read_text())
+    assert global_config["default_registry"] == "existing"
+    # Registry path still gets registered even when not the default.
+    assert "reg-01" in global_config["registries"]
+
+
+def test_find_registry_config_finds_by_id_in_cfg(tmp_path: Path) -> None:
+    """find_registry_config returns (actual_id, home_path) when registry ID is in cfg."""
+    cfg = AlphConfig(registries={"reg-01": str(tmp_path / "home")})
+    result = find_registry_config("reg-01", cfg=cfg)
+    assert result is not None
+    actual_id, home = result
+    assert actual_id == "reg-01"
+    assert home == tmp_path / "home"
+
+
+def test_find_registry_config_finds_by_name_via_home_config(tmp_path: Path) -> None:
+    """find_registry_config matches on registry name by reading the home config."""
+    reg_home = tmp_path / "home"
+    init_registry(home=reg_home, registry_id="reg-01", context="Test", name="My Registry")
+    cfg = AlphConfig(registries={"reg-01": str(reg_home)})
+    result = find_registry_config("My Registry", cfg=cfg)
+    assert result is not None
+    actual_id, home = result
+    assert actual_id == "reg-01"
+    assert home == reg_home
+
+
+def test_find_registry_config_returns_none_when_not_in_cfg(tmp_path: Path) -> None:
+    """find_registry_config returns None when the ID is not in cfg.registries."""
+    cfg = AlphConfig(registries={"other-reg": str(tmp_path)})
+    assert find_registry_config("nonexistent", cfg=cfg) is None
+
+
+def test_find_registry_config_returns_none_for_empty_cfg(tmp_path: Path) -> None:
+    """find_registry_config returns None when cfg has no registries."""
+    cfg = AlphConfig()
+    assert find_registry_config("reg-01", cfg=cfg) is None
+
+
+# ---------------------------------------------------------------------------
+# collect_registries
+# ---------------------------------------------------------------------------
+
+
+def test_collect_registries_returns_summaries_from_cfg(tmp_path: Path) -> None:
+    """collect_registries returns one RegistrySummary per entry in cfg.registries."""
+    reg_home = tmp_path / "home"
+    init_registry(home=reg_home, registry_id="reg-01", context="My context", name="My Registry")
+    cfg = AlphConfig(registries={"reg-01": str(reg_home)})
+    summaries = collect_registries(cfg=cfg)
+    assert len(summaries) == 1
+    assert summaries[0].registry_id == "reg-01"
+    assert summaries[0].name == "My Registry"
+    assert summaries[0].context == "My context"
+
+
+def test_collect_registries_returns_empty_when_no_registries(tmp_path: Path) -> None:
+    """collect_registries returns an empty list when cfg has no registries."""
+    cfg = AlphConfig()
+    assert collect_registries(cfg=cfg) == []
+
+
+def test_collect_registries_config_path_points_to_home_config(tmp_path: Path) -> None:
+    """collect_registries reports the config_path as the registry home config.yaml."""
+    reg_home = tmp_path / "home"
+    init_registry(home=reg_home, registry_id="reg-01", context="Test")
+    cfg = AlphConfig(registries={"reg-01": str(reg_home)})
+    summaries = collect_registries(cfg=cfg)
+    assert summaries[0].config_path == reg_home / "config.yaml"
+
+
 def test_init_pool_creates_required_directories(tmp_path: Path) -> None:
     """init_pool creates snapshots/, pointers/, and .alph/ inside the pool."""
-    registry_path = tmp_path / "registry"
-    init_registry(path=registry_path, registry_id="reg-01", context="Test registry")
+    init_registry(home=tmp_path, registry_id="reg-01", context="Test registry",
+                  global_config_dir=tmp_path / "no-global")
     result = init_pool(
-        registry_path=registry_path,
+        registry_id="reg-01",
         name="highlander",
         context="Maintenance for the Highlander",
+        cwd=tmp_path,
+        global_config_dir=tmp_path / "no-global",
     )
     assert (result.pool_path / "snapshots").is_dir()
     assert (result.pool_path / "pointers").is_dir()
@@ -185,34 +292,103 @@ def test_init_pool_creates_required_directories(tmp_path: Path) -> None:
 
 
 def test_init_pool_registers_pool_in_registry_config(tmp_path: Path) -> None:
-    """init_pool adds the pool entry to the registry config."""
-    registry_path = tmp_path / "registry"
-    init_registry(path=registry_path, registry_id="reg-01", context="Test registry")
-    init_pool(
-        registry_path=registry_path,
+    """init_pool adds the pool entry to the config file that owns the registry."""
+    init_registry(home=tmp_path, registry_id="reg-01", context="Test registry",
+                  global_config_dir=tmp_path / "no-global")
+    result = init_pool(
+        registry_id="reg-01",
         name="highlander",
         context="Maintenance for the Highlander",
+        cwd=tmp_path,
+        global_config_dir=tmp_path / "no-global",
     )
-    config = yaml.safe_load((registry_path / "config.yaml").read_text())
+    config = yaml.safe_load(result.config_path.read_text())
     assert "highlander" in config["pools"]
     assert config["pools"]["highlander"]["context"] == "Maintenance for the Highlander"
 
 
 def test_init_pool_validates_its_own_output(tmp_path: Path) -> None:
     """init_pool result passes registry validation."""
-    registry_path = tmp_path / "registry"
-    init_registry(path=registry_path, registry_id="reg-01", context="Test registry")
+    init_registry(home=tmp_path, registry_id="reg-01", context="Test registry",
+                  global_config_dir=tmp_path / "no-global")
     result = init_pool(
-        registry_path=registry_path,
+        registry_id="reg-01",
         name="highlander",
         context="Maintenance for the Highlander",
+        cwd=tmp_path,
+        global_config_dir=tmp_path / "no-global",
     )
     assert result.valid is True
 
 
+def test_init_pool_errors_when_registry_not_found(tmp_path: Path) -> None:
+    """init_pool returns an invalid result when the registry ID is not found."""
+    result = init_pool(
+        registry_id="nonexistent",
+        name="vehicles",
+        context="Vehicles",
+        cwd=tmp_path,
+        global_config_dir=tmp_path / "no-global",
+    )
+    assert result.valid is False
+    assert any("nonexistent" in e for e in result.errors)
+
+
+def test_init_pool_bootstrap_creates_registry_and_pool(tmp_path: Path) -> None:
+    """init_pool with bootstrap=True creates the registry if not found."""
+    result = init_pool(
+        registry_id="new-reg",
+        name="vehicles",
+        context="Vehicles",
+        cwd=tmp_path,
+        global_config_dir=tmp_path / "no-global",
+        bootstrap=True,
+        registry_context="Bootstrapped registry",
+    )
+    assert result.valid is True
+    assert (result.pool_path / "snapshots").is_dir()
+
+
+def test_init_pool_writes_default_pool_to_global_config(tmp_path: Path) -> None:
+    """init_pool sets default_pool in the global config when this is the default registry."""
+    global_dir = tmp_path / "global"
+    init_registry(home=tmp_path, registry_id="reg-01", context="Test",
+                  global_config_dir=global_dir)
+    init_pool(
+        registry_id="reg-01",
+        name="vehicles",
+        context="Vehicles",
+        cwd=tmp_path,
+        global_config_dir=global_dir,
+    )
+    global_config = yaml.safe_load((global_dir / "config.yaml").read_text())
+    assert global_config.get("default_pool") == "vehicles"
+
+
+def test_init_pool_does_not_override_existing_default_pool(tmp_path: Path) -> None:
+    """init_pool does not overwrite default_pool when one is already set."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "default_registry": "reg-01",
+        "default_pool": "existing-pool",
+        "registries": {"reg-01": str(tmp_path)},
+    })
+    init_registry(home=tmp_path, registry_id="reg-01", context="Test",
+                  global_config_dir=global_dir)
+    init_pool(
+        registry_id="reg-01",
+        name="new-pool",
+        context="New pool",
+        cwd=tmp_path,
+        global_config_dir=global_dir,
+    )
+    global_config = yaml.safe_load((global_dir / "config.yaml").read_text())
+    assert global_config["default_pool"] == "existing-pool"
+
+
 def test_load_config_returns_defaults_when_no_files_exist(tmp_path: Path) -> None:
     """load_config returns an AlphConfig with defaults when no config files are present."""
-    config = load_config(global_config_dir=tmp_path / "global", pool_path=tmp_path / "pool")
+    config = load_config(global_config_dir=tmp_path / "global")
     assert isinstance(config, AlphConfig)
     assert config.auto_commit is False
 
@@ -221,62 +397,96 @@ def test_load_config_reads_global_creator(tmp_path: Path) -> None:
     """load_config picks up creator email from the global config file."""
     global_dir = tmp_path / "global"
     _write_config(global_dir / "config.yaml", {"creator": "chase@example.com"})
-    config = load_config(global_config_dir=global_dir, pool_path=tmp_path / "pool")
+    config = load_config(global_config_dir=global_dir)
     assert config.creator == "chase@example.com"
 
 
-def test_load_config_pool_overrides_global(tmp_path: Path) -> None:
-    """Pool-level config overrides global config for the same key."""
+def test_load_config_cwd_local_overrides_global(tmp_path: Path) -> None:
+    """A config.yaml in cwd overrides global config for the same key."""
     global_dir = tmp_path / "global"
-    pool_dir = tmp_path / "pool"
+    cwd = tmp_path / "project"
     _write_config(global_dir / "config.yaml", {"creator": "global@example.com", "auto_commit": False})
-    _write_config(pool_dir / ".alph" / "config.yaml", {"creator": "pool@example.com"})
-    config = load_config(global_config_dir=global_dir, pool_path=pool_dir)
-    assert config.creator == "pool@example.com"
+    _write_config(cwd / "config.yaml", {"creator": "local@example.com"})
+    config = load_config(global_config_dir=global_dir, cwd=cwd)
+    assert config.creator == "local@example.com"
     assert config.auto_commit is False
 
 
+def test_load_config_parent_dir_config_is_picked_up(tmp_path: Path) -> None:
+    """load_config reads a config.yaml in a parent directory of cwd."""
+    global_dir = tmp_path / "global"
+    project = tmp_path / "project"
+    nested = project / "a" / "b"
+    nested.mkdir(parents=True)
+    _write_config(global_dir / "config.yaml", {"creator": "global@example.com"})
+    _write_config(project / "config.yaml", {"creator": "project@example.com"})
+    config = load_config(global_config_dir=global_dir, cwd=nested)
+    assert config.creator == "project@example.com"
+
+
+def test_load_config_cwd_most_specific_wins_over_parent(tmp_path: Path) -> None:
+    """When two cwd-walk configs set the same key, the one closest to cwd wins."""
+    global_dir = tmp_path / "global"
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    _write_config(global_dir / "config.yaml", {"creator": "global@example.com"})
+    _write_config(parent / "config.yaml", {"creator": "parent@example.com"})
+    _write_config(child / "config.yaml", {"creator": "child@example.com"})
+    config = load_config(global_config_dir=global_dir, cwd=child)
+    assert config.creator == "child@example.com"
+
+
 def test_load_config_cli_overrides_override_everything(tmp_path: Path) -> None:
-    """CLI overrides take precedence over both global and pool config."""
+    """CLI overrides take precedence over both global and local configs."""
     global_dir = tmp_path / "global"
     _write_config(global_dir / "config.yaml", {"creator": "global@example.com"})
     config = load_config(
         global_config_dir=global_dir,
-        pool_path=tmp_path / "pool",
         overrides={"creator": "cli@example.com"},
     )
     assert config.creator == "cli@example.com"
 
 
-def test_load_config_accumulates_registries_from_multiple_files(tmp_path: Path) -> None:
-    """Registries from global and pool configs are merged, not overwritten."""
+def test_load_config_accumulates_registries_from_global_and_cwd(tmp_path: Path) -> None:
+    """Registries from global and cwd walk configs are merged."""
     global_dir = tmp_path / "global"
-    pool_dir = tmp_path / "pool"
+    cwd = tmp_path / "project"
     _write_config(global_dir / "config.yaml", {
         "registries": {"household": "/registries/household"},
     })
-    _write_config(pool_dir / ".alph" / "config.yaml", {
+    _write_config(cwd / "config.yaml", {
         "registries": {"work": "/registries/work"},
     })
-    config = load_config(global_config_dir=global_dir, pool_path=pool_dir)
-    assert config.registries == {
-        "household": "/registries/household",
-        "work": "/registries/work",
-    }
+    config = load_config(global_config_dir=global_dir, cwd=cwd)
+    assert "household" in config.registries
+    assert "work" in config.registries
 
 
-def test_load_config_pool_registry_entry_overrides_global_for_same_id(tmp_path: Path) -> None:
-    """A pool-level registry entry for the same ID takes precedence over the global one."""
+def test_load_config_cwd_registry_entry_overrides_global_for_same_id(tmp_path: Path) -> None:
+    """A cwd-local registry entry for the same ID overrides the global one."""
     global_dir = tmp_path / "global"
-    pool_dir = tmp_path / "pool"
+    cwd = tmp_path / "project"
     _write_config(global_dir / "config.yaml", {
         "registries": {"household": "/global/household"},
     })
-    _write_config(pool_dir / ".alph" / "config.yaml", {
+    _write_config(cwd / "config.yaml", {
         "registries": {"household": "/local/household"},
     })
-    config = load_config(global_config_dir=global_dir, pool_path=pool_dir)
+    config = load_config(global_config_dir=global_dir, cwd=cwd)
     assert config.registries["household"] == "/local/household"
+
+
+def test_load_config_picks_up_registry_from_home_config_in_cwd_walk(tmp_path: Path) -> None:
+    """load_config walking cwd finds a registry home config and maps its ID to the home path."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "my-registry"
+    # init_registry writes home config with dict format; no global_config_dir → not in global config
+    init_registry(home=reg_home, registry_id="reg-01", context="Test")
+    # Load from a cwd that is the registry home — walk-up will find it
+    config = load_config(global_config_dir=global_dir, cwd=reg_home)
+    assert "reg-01" in config.registries
+    assert config.registries["reg-01"] == str(reg_home)
 
 
 def test_resolve_default_pool_returns_path_when_configured(tmp_path: Path) -> None:
@@ -712,3 +922,87 @@ def test_node_summary_status_defaults_to_active_when_absent(tmp_path: Path) -> N
                 timestamp="2026-03-05T10:00:00Z")
     summaries = list_nodes(pool)
     assert summaries[0].status == "active"
+
+
+# ---------------------------------------------------------------------------
+# list_config_paths and default_global_config_text
+# ---------------------------------------------------------------------------
+
+
+def test_list_config_paths_always_includes_global(tmp_path: Path) -> None:
+    """list_config_paths always includes the global config path."""
+    global_dir = tmp_path / "global"
+    summaries = list_config_paths(global_config_dir=global_dir, cwd=tmp_path)
+    paths = [s.path for s in summaries]
+    assert global_dir / "config.yaml" in paths
+
+
+def test_list_config_paths_includes_cwd(tmp_path: Path) -> None:
+    """list_config_paths includes cwd/config.yaml in the results."""
+    global_dir = tmp_path / "global"
+    summaries = list_config_paths(global_config_dir=global_dir, cwd=tmp_path)
+    paths = [s.path for s in summaries]
+    assert tmp_path / "config.yaml" in paths
+
+
+def test_list_config_paths_marks_existing_files(tmp_path: Path) -> None:
+    """list_config_paths marks exists=True only for files that are on disk."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {"creator": "test@example.com"})
+    summaries = list_config_paths(global_config_dir=global_dir, cwd=tmp_path)
+    global_s = next(s for s in summaries if s.is_global)
+    cwd_s = next(s for s in summaries if s.path == tmp_path / "config.yaml")
+    assert global_s.exists is True
+    assert cwd_s.exists is False
+
+
+def test_list_config_paths_marks_global(tmp_path: Path) -> None:
+    """list_config_paths marks the global config entry with is_global=True."""
+    global_dir = tmp_path / "global"
+    summaries = list_config_paths(global_config_dir=global_dir, cwd=tmp_path)
+    global_count = sum(1 for s in summaries if s.is_global)
+    assert global_count == 1
+    assert next(s for s in summaries if s.is_global).path == global_dir / "config.yaml"
+
+
+def test_list_config_paths_shows_registry_ids_from_existing_file(tmp_path: Path) -> None:
+    """list_config_paths includes registry IDs declared in each existing config file."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {"my-reg": str(tmp_path / "home")},
+    })
+    summaries = list_config_paths(global_config_dir=global_dir, cwd=tmp_path)
+    global_s = next(s for s in summaries if s.is_global)
+    assert "my-reg" in global_s.registry_ids
+
+
+def test_list_config_paths_non_global_cwd_not_marked_global(tmp_path: Path) -> None:
+    """A cwd config.yaml is not marked is_global even when it exists."""
+    global_dir = tmp_path / "global"
+    _write_config(tmp_path / "config.yaml", {"creator": "local@example.com"})
+    summaries = list_config_paths(global_config_dir=global_dir, cwd=tmp_path)
+    cwd_s = next(s for s in summaries if s.path == tmp_path / "config.yaml")
+    assert cwd_s.is_global is False
+    assert cwd_s.exists is True
+
+
+def test_default_global_config_text_contains_all_standard_keys() -> None:
+    """default_global_config_text() returns text with all standard config keys."""
+    text = default_global_config_text()
+    for key in ("creator", "default_registry", "default_pool", "registries", "auto_commit"):
+        assert key in text
+
+
+def test_default_global_config_text_contains_comments() -> None:
+    """default_global_config_text() has at least one # comment per config key."""
+    text = default_global_config_text()
+    assert text.count("#") >= 5
+
+
+def test_default_global_config_text_is_valid_yaml() -> None:
+    """default_global_config_text() produces valid YAML that parses without error."""
+    text = default_global_config_text()
+    # Strip comment lines before parsing (pyyaml handles inline comments but
+    # let's confirm the overall structure is valid)
+    parsed = yaml.safe_load(text)
+    assert isinstance(parsed, dict)

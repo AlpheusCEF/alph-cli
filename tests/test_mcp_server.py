@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from alph.core import create_node, init_pool, init_registry
 from alph.mcp_server import (
     tool_add_node,
@@ -16,11 +14,15 @@ from alph.mcp_server import (
 def _setup_pool(base: Path) -> Path:
     """Create a registry + pool and return the pool path."""
     registry_path = base / "registry"
-    init_registry(path=registry_path, registry_id="test", context="Test registry")
+    global_dir = base / "global"
+    init_registry(home=registry_path, registry_id="test", context="Test registry",
+                  global_config_dir=global_dir)
     result = init_pool(
-        registry_path=registry_path,
+        registry_id="test",
         name="vehicles",
         context="Vehicle maintenance",
+        cwd=registry_path,
+        global_config_dir=global_dir,
     )
     return result.pool_path
 

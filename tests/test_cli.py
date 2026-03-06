@@ -1,8 +1,8 @@
 """Behavior tests for the alph CLI."""
 
-import yaml
 from pathlib import Path
 
+import yaml
 from typer.testing import CliRunner
 
 from alph.cli import app
@@ -13,18 +13,20 @@ runner = CliRunner()
 
 def _init_registry_and_pool(base: Path) -> Path:
     """Create a minimal registry + pool using the CLI, return pool path."""
-    runner.invoke(app, ["registry", "init", "--path", str(base / "registry"),
+    registry_dir = base / "registry"
+    runner.invoke(app, ["registry", "init", "--home", str(registry_dir),
                         "--id", "reg-01", "--context", "Test registry"])
-    runner.invoke(app, ["pool", "init", "--registry", str(base / "registry"),
-                        "--name", "test-pool", "--context", "Test pool"])
-    return base / "registry" / "test-pool"
+    runner.invoke(app, ["pool", "init", "--registry", "reg-01",
+                        "--name", "test-pool", "--context", "Test pool",
+                        "--cwd", str(registry_dir)])
+    return registry_dir / "test-pool"
 
 
 def test_registry_init_creates_config(tmp_path: Path) -> None:
     """alph registry init creates a config.yaml in the specified path."""
     result = runner.invoke(app, [
         "registry", "init",
-        "--path", str(tmp_path / "registry"),
+        "--home", str(tmp_path / "registry"),
         "--id", "reg-01",
         "--context", "Personal context pools",
     ])
@@ -34,18 +36,61 @@ def test_registry_init_creates_config(tmp_path: Path) -> None:
 
 def test_pool_init_creates_pool_structure(tmp_path: Path) -> None:
     """alph pool init creates snapshots/, pointers/, and .alph/ directories."""
-    runner.invoke(app, ["registry", "init", "--path", str(tmp_path / "reg"),
+    reg_dir = tmp_path / "reg"
+    runner.invoke(app, ["registry", "init", "--home", str(reg_dir),
                         "--id", "r1", "--context", "Test"])
     result = runner.invoke(app, [
         "pool", "init",
-        "--registry", str(tmp_path / "reg"),
+        "--registry", "r1",
         "--name", "vehicles",
         "--context", "Vehicle maintenance",
+        "--cwd", str(reg_dir),
     ])
     assert result.exit_code == 0
-    pool = tmp_path / "reg" / "vehicles"
+    pool = reg_dir / "vehicles"
     assert (pool / "snapshots").is_dir()
     assert (pool / "pointers").is_dir()
+
+
+def test_pool_init_errors_when_registry_not_found(tmp_path: Path) -> None:
+    """alph pool init exits non-zero with a helpful message when registry ID is unknown."""
+    result = runner.invoke(app, [
+        "pool", "init",
+        "--registry", "ghost-registry",
+        "--name", "vehicles",
+        "--context", "Vehicles",
+        "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "ghost-registry" in result.output
+
+
+def test_registry_init_output_mentions_config_file(tmp_path: Path) -> None:
+    """alph registry init output names the config file and registry created."""
+    result = runner.invoke(app, [
+        "registry", "init",
+        "--home", str(tmp_path / "reg"),
+        "--id", "my-reg",
+        "--context", "Test",
+        "--name", "My Registry",
+    ])
+    assert result.exit_code == 0
+    assert "config.yaml" in result.output
+    assert "my-reg" in result.output or "My Registry" in result.output
+
+
+def test_registry_init_reports_set_as_default(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry init reports when the new registry is set as default."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "init",
+        "--home", str(tmp_path / "reg"),
+        "--id", "my-reg",
+        "--context", "Test",
+    ])
+    assert result.exit_code == 0
+    assert "default" in result.output.lower()
 
 
 def test_add_creates_node_file(tmp_path: Path) -> None:
@@ -86,8 +131,8 @@ def test_list_shows_node_context(tmp_path: Path) -> None:
 def test_show_displays_full_node(tmp_path: Path) -> None:
     """alph show <id> outputs the full node content."""
     pool = _init_registry_and_pool(tmp_path)
-    add_result = runner.invoke(app, ["add", "-c", "Tire rotation",
-                                     "--pool", str(pool), "--creator", "chase@example.com"])
+    runner.invoke(app, ["add", "-c", "Tire rotation",
+                         "--pool", str(pool), "--creator", "chase@example.com"])
     # ID is echoed in the add output
     node_id = next((pool / "snapshots").glob("*.md")).stem
     result = runner.invoke(app, ["show", node_id, "--pool", str(pool)])
@@ -214,3 +259,121 @@ def test_add_errors_when_no_creator_and_no_config(tmp_path: Path, monkeypatch) -
     pool = _init_registry_and_pool(tmp_path)
     result = runner.invoke(app, ["add", "-c", "No creator node", "--pool", str(pool)])
     assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Registry list
+# ---------------------------------------------------------------------------
+
+
+def test_registry_list_shows_registry_id_and_context(tmp_path: Path) -> None:
+    """alph registry list displays registry ID and context from the config tree."""
+    registry_dir = tmp_path / "my-registry"
+    runner.invoke(app, [
+        "registry", "init",
+        "--home", str(registry_dir),
+        "--id", "personal",
+        "--context", "Personal context pools",
+        "--name", "Personal",
+    ])
+    result = runner.invoke(app, ["registry", "list", "--cwd", str(registry_dir)])
+    assert result.exit_code == 0
+    assert "personal" in result.output
+    assert "Personal context pools" in result.output
+
+
+def test_registry_list_shows_no_registries_when_none_exist(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry list reports no registries when none are declared in the config tree."""
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(tmp_path / "empty-global"))
+    result = runner.invoke(app, ["registry", "list", "--cwd", str(tmp_path / "nowhere")])
+    assert result.exit_code == 0
+    assert "no registries" in result.output.lower()
+
+
+def test_pool_init_shows_known_registries_on_unknown_registry_error(tmp_path: Path) -> None:
+    """alph pool init prints known registries when the specified registry is not found."""
+    registry_dir = tmp_path / "reg"
+    runner.invoke(app, [
+        "registry", "init",
+        "--home", str(registry_dir),
+        "--id", "existing-reg",
+        "--context", "Existing registry",
+    ])
+    result = runner.invoke(app, [
+        "pool", "init",
+        "--registry", "ghost-registry",
+        "--name", "vehicles",
+        "--context", "Vehicles",
+        "--cwd", str(registry_dir),
+    ])
+    assert result.exit_code != 0
+    assert "ghost-registry" in result.output
+    assert "existing-reg" in result.output
+
+
+# ---------------------------------------------------------------------------
+# alph config list and alph config show
+# ---------------------------------------------------------------------------
+
+
+def test_config_list_shows_global_config_path(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph config list includes the global config path in the output."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["config", "list", "--cwd", str(tmp_path)])
+    assert result.exit_code == 0
+    assert str(global_dir / "config.yaml") in result.output
+
+
+def test_config_list_shows_cwd_config_path(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph config list includes the cwd config.yaml path in the output."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["config", "list", "--cwd", str(tmp_path)])
+    assert result.exit_code == 0
+    assert str(tmp_path / "config.yaml") in result.output
+
+
+def test_config_list_marks_existing_config_files(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph config list distinguishes existing from missing config files."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {"creator": "test@example.com"})
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["config", "list", "--cwd", str(tmp_path)])
+    assert result.exit_code == 0
+    # The output should have some marker for existing vs missing files
+    assert "exists" in result.output.lower() or "missing" in result.output.lower()
+
+
+def test_config_show_displays_existing_config_content(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph config show displays the YAML content of an existing config file."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {"creator": "test@example.com"})
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    config_path = global_dir / "config.yaml"
+    result = runner.invoke(app, ["config", "show", str(config_path)])
+    assert result.exit_code == 0
+    assert "creator" in result.output
+
+
+def test_config_show_prints_bootstrap_notice_for_missing_file(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph config show explains how to bootstrap when the config file does not exist."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    config_path = global_dir / "config.yaml"
+    result = runner.invoke(app, ["config", "show", str(config_path)])
+    assert result.exit_code == 0
+    # Should mention the file is missing and show a template / bootstrap hint
+    output_lower = result.output.lower()
+    assert "not found" in output_lower or "does not exist" in output_lower or "bootstrap" in output_lower
+
+
+def test_config_show_bootstrap_notice_includes_template_keys(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph config show bootstrap notice includes all standard config keys."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    config_path = global_dir / "config.yaml"
+    result = runner.invoke(app, ["config", "show", str(config_path)])
+    assert result.exit_code == 0
+    assert "creator" in result.output
+    assert "default_registry" in result.output
