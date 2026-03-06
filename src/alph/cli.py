@@ -92,16 +92,17 @@ def _require_creator(creator_flag: str | None, cfg: AlphConfig) -> str:
 
 @registry_app.command("init")
 def registry_init(
-    home: Path = typer.Option(..., "--home", help="Directory where pool subdirectories will be created. The registry config.yaml is written here."),
+    home: Path = typer.Option(..., "--home", help="Directory where pool subdirectories will be created. The registry definition is written into the global config, not here."),
     registry_id: str = typer.Option(..., "--id", help="Machine identifier for the registry."),
     context: str = typer.Option(..., "--context", "-c", help="Human/LLM-readable description."),
     name: str = typer.Option("", "--name", help="Optional human-readable name."),
 ) -> None:
     """Create a registry home directory and register it in the global config.
 
-    The registry is declared in ~/.config/alph/config.yaml (global config)
-    so it is discoverable by all alph commands. A local config.yaml with
-    registry metadata is also written to --home.
+    The registry definition (id, context, name) is written into the global
+    config (~/.config/alph/config.yaml). The --home directory is created but
+    receives no config file — it is just the directory where pool subdirectories
+    will live.
 
     If no default registry is set yet, this one becomes the default, enabling
     'alph add' and 'alph list' to work without --pool or --creator flags
@@ -119,6 +120,7 @@ def registry_init(
             console.print(f"[red]error:[/red] {error}")
         raise typer.Exit(code=1)
     console.print(f"[green]registry created:[/green] {registry_id}")
+    console.print(f"  home:   {home}")
     console.print(f"  config: {result.config_path}")
     if result.set_as_default:
         console.print("  [dim]set as default registry[/dim]")
@@ -142,9 +144,9 @@ def registry_list(
     table.add_column("ID", style="dim", width=20)
     table.add_column("name", width=20)
     table.add_column("context")
-    table.add_column("config file")
+    table.add_column("home")
     for s in summaries:
-        table.add_row(s.registry_id, s.name, s.context, str(s.config_path))
+        table.add_row(s.registry_id, s.name, s.context, str(s.home_path))
     console.print(table)
 
 

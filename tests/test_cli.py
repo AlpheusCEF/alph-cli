@@ -22,8 +22,10 @@ def _init_registry_and_pool(base: Path) -> Path:
     return registry_dir / "test-pool"
 
 
-def test_registry_init_creates_config(tmp_path: Path) -> None:
-    """alph registry init creates a config.yaml in the specified path."""
+def test_registry_init_creates_home_directory_and_global_entry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry init creates the home directory and writes the entry to the global config."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     result = runner.invoke(app, [
         "registry", "init",
         "--home", str(tmp_path / "registry"),
@@ -31,7 +33,13 @@ def test_registry_init_creates_config(tmp_path: Path) -> None:
         "--context", "Personal context pools",
     ])
     assert result.exit_code == 0
-    assert (tmp_path / "registry" / "config.yaml").exists()
+    # Home dir is created but has no config.yaml.
+    assert (tmp_path / "registry").is_dir()
+    assert not (tmp_path / "registry" / "config.yaml").exists()
+    # Global config has the registry entry.
+    global_config = yaml.safe_load((global_dir / "config.yaml").read_text())
+    assert "reg-01" in global_config["registries"]
+    assert global_config["registries"]["reg-01"]["context"] == "Personal context pools"
 
 
 def test_pool_init_creates_pool_structure(tmp_path: Path) -> None:
@@ -65,8 +73,10 @@ def test_pool_init_errors_when_registry_not_found(tmp_path: Path) -> None:
     assert "ghost-registry" in result.output
 
 
-def test_registry_init_output_mentions_config_file(tmp_path: Path) -> None:
-    """alph registry init output names the config file and registry created."""
+def test_registry_init_output_mentions_home_and_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry init output shows the registry ID, home dir, and global config path."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     result = runner.invoke(app, [
         "registry", "init",
         "--home", str(tmp_path / "reg"),
@@ -75,8 +85,10 @@ def test_registry_init_output_mentions_config_file(tmp_path: Path) -> None:
         "--name", "My Registry",
     ])
     assert result.exit_code == 0
+    assert "my-reg" in result.output
+    # Output should mention both the home directory and the config file location.
+    assert "home" in result.output or str(tmp_path / "reg") in result.output
     assert "config.yaml" in result.output
-    assert "my-reg" in result.output or "My Registry" in result.output
 
 
 def test_registry_init_reports_set_as_default(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -266,8 +278,10 @@ def test_add_errors_when_no_creator_and_no_config(tmp_path: Path, monkeypatch) -
 # ---------------------------------------------------------------------------
 
 
-def test_registry_list_shows_registry_id_and_context(tmp_path: Path) -> None:
-    """alph registry list displays registry ID and context from the config tree."""
+def test_registry_list_shows_registry_id_and_context(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry list displays registry ID and context from the global config."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     registry_dir = tmp_path / "my-registry"
     runner.invoke(app, [
         "registry", "init",
@@ -276,7 +290,7 @@ def test_registry_list_shows_registry_id_and_context(tmp_path: Path) -> None:
         "--context", "Personal context pools",
         "--name", "Personal",
     ])
-    result = runner.invoke(app, ["registry", "list", "--cwd", str(registry_dir)])
+    result = runner.invoke(app, ["registry", "list"])
     assert result.exit_code == 0
     assert "personal" in result.output
     assert "Personal context pools" in result.output
