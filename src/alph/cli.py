@@ -1,5 +1,6 @@
 """Thin Typer wrapper exposing core.py as the `alph` CLI."""
 
+import os
 from pathlib import Path
 
 import typer
@@ -7,11 +8,14 @@ from rich.console import Console
 from rich.table import Table
 
 from alph.core import (
+    AlphConfig,
     create_node,
     extract_frontmatter,
     init_pool,
     init_registry,
     list_nodes,
+    load_config,
+    resolve_default_pool,
     show_node,
     validate_node,
 )
@@ -24,6 +28,44 @@ app.add_typer(registry_app, name="registry")
 app.add_typer(pool_app, name="pool")
 
 console = Console(width=200)
+
+
+def _global_config_dir() -> Path:
+    """Return the global config directory, overridable via ALPH_CONFIG_DIR for tests."""
+    override = os.environ.get("ALPH_CONFIG_DIR")
+    return Path(override) if override else Path.home() / ".config" / "alph"
+
+
+def _load_cli_config(pool_path: Path | None = None) -> AlphConfig:
+    """Load merged config for a CLI invocation."""
+    return load_config(
+        global_config_dir=_global_config_dir(),
+        pool_path=pool_path or Path("/nonexistent"),
+    )
+
+
+def _require_pool(pool_flag: Path | None, cfg: AlphConfig) -> Path:
+    """Resolve pool path from flag or config default. Exits with error if neither is set."""
+    if pool_flag is not None:
+        return pool_flag
+    resolved = resolve_default_pool(cfg)
+    if resolved is None:
+        console.print(
+            "[red]error:[/red] --pool required, or set default_registry + default_pool "
+            "and registries in ~/.config/alph/config.yaml"
+        )
+        raise typer.Exit(code=1)
+    return resolved
+
+
+def _require_creator(creator_flag: str | None, cfg: AlphConfig) -> str:
+    """Resolve creator from flag or config. Exits with error if neither is set."""
+    if creator_flag:
+        return creator_flag
+    if cfg.creator:
+        return cfg.creator
+    console.print("[red]error:[/red] --creator required, or set creator in ~/.config/alph/config.yaml")
+    raise typer.Exit(code=1)
 
 
 @registry_app.command("init")
@@ -44,12 +86,23 @@ def registry_init(
 
 @pool_app.command("init")
 def pool_init(
-    registry: Path = typer.Option(..., "--registry", help="Path to the parent registry."),
+    registry: Path | None = typer.Option(None, "--registry", help="Path to the parent registry. Defaults to default_registry from config."),
     name: str = typer.Option(..., "--name", help="Pool name (machine identifier)."),
     context: str = typer.Option(..., "--context", "-c", help="Human/LLM-readable description."),
     layout: str = typer.Option("subdirectory", "--layout", help="'subdirectory' or 'repo'."),
 ) -> None:
     """Create a pool, register it, validate it, and print defaults."""
+    cfg = _load_cli_config()
+    if registry is None:
+        reg_id = cfg.default_registry
+        reg_path_str = cfg.registries.get(reg_id) if reg_id else None
+        if not reg_path_str:
+            console.print(
+                "[red]error:[/red] --registry required, or set default_registry and registries "
+                "in ~/.config/alph/config.yaml"
+            )
+            raise typer.Exit(code=1)
+        registry = Path(reg_path_str)
     result = init_pool(registry_path=registry, name=name, context=context, layout=layout)
     if not result.valid:
         for error in result.errors:
@@ -64,21 +117,25 @@ def pool_init(
 @app.command("add")
 def cmd_add(
     context: str = typer.Option(..., "-c", "--context", help="Context description for this node."),
-    pool: Path = typer.Option(..., "--pool", help="Path to the pool directory."),
-    creator: str = typer.Option(..., "--creator", help="Creator email address."),
+    pool: Path | None = typer.Option(None, "--pool", help="Path to the pool directory. Defaults to default_pool from config."),
+    creator: str | None = typer.Option(None, "--creator", help="Creator email address. Defaults to creator from config."),
     node_type: str = typer.Option("fixed", "--type", help="'fixed' or 'live'."),
     content: str = typer.Option("", "--content", help="Optional Markdown body."),
     status: str | None = typer.Option(None, "--status", help="active, archived, or suppressed."),
 ) -> None:
     """Create a context node in a pool."""
+    cfg = _load_cli_config(pool)
+    resolved_pool = _require_pool(pool, cfg)
+    resolved_creator = _require_creator(creator, cfg)
     result = create_node(
-        pool_path=pool,
+        pool_path=resolved_pool,
         source="cli",
         node_type=node_type,
         context=context,
-        creator=creator,
+        creator=resolved_creator,
         content=content,
         status=status,
+        auto_commit=cfg.auto_commit,
     )
     if result.duplicate:
         console.print(
@@ -92,7 +149,7 @@ def cmd_add(
 
 @app.command("list")
 def cmd_list(
-    pool: Path = typer.Option(..., "--pool", help="Path to the pool directory."),
+    pool: Path | None = typer.Option(None, "--pool", help="Path to the pool directory. Defaults to default_pool from config."),
     status: list[str] = typer.Option(
         [],
         "-s",
@@ -107,6 +164,9 @@ def cmd_list(
     -s suppressed includes active + suppressed
     -s all        includes everything
     """
+    cfg = _load_cli_config(pool)
+    resolved_pool = _require_pool(pool, cfg)
+
     if not status:
         include_statuses: set[str] = {"active"}
     elif "all" in status:
@@ -114,7 +174,7 @@ def cmd_list(
     else:
         include_statuses = {"active"} | set(status)
 
-    summaries = list_nodes(pool, include_statuses=include_statuses)
+    summaries = list_nodes(resolved_pool, include_statuses=include_statuses)
     if not summaries:
         console.print("no nodes found.")
         return
@@ -132,10 +192,12 @@ def cmd_list(
 @app.command("show")
 def cmd_show(
     node_id: str = typer.Argument(..., help="Node ID to display."),
-    pool: Path = typer.Option(..., "--pool", help="Path to the pool directory."),
+    pool: Path | None = typer.Option(None, "--pool", help="Path to the pool directory. Defaults to default_pool from config."),
 ) -> None:
     """Display full node content formatted for terminal."""
-    detail = show_node(pool, node_id)
+    cfg = _load_cli_config(pool)
+    resolved_pool = _require_pool(pool, cfg)
+    detail = show_node(resolved_pool, node_id)
     if detail is None:
         console.print(f"[red]not found:[/red] {node_id}")
         raise typer.Exit(code=1)
@@ -155,12 +217,14 @@ def cmd_show(
 
 @app.command("validate")
 def cmd_validate(
-    pool: Path = typer.Option(..., "--pool", help="Path to the pool directory."),
+    pool: Path | None = typer.Option(None, "--pool", help="Path to the pool directory. Defaults to default_pool from config."),
 ) -> None:
     """Check all nodes in a pool against schema."""
+    cfg = _load_cli_config(pool)
+    resolved_pool = _require_pool(pool, cfg)
     errors_found = False
     for subdir in ("snapshots", "pointers"):
-        directory = pool / subdir
+        directory = resolved_pool / subdir
         if not directory.exists():
             continue
         for node_file in sorted(directory.glob("*.md")):
@@ -169,10 +233,10 @@ def cmd_validate(
                 console.print(f"[red]no frontmatter:[/red] {node_file.name}")
                 errors_found = True
                 continue
-            result = validate_node(frontmatter)
-            if not result.valid:
+            vresult = validate_node(frontmatter)
+            if not vresult.valid:
                 errors_found = True
-                for error in result.errors:
+                for error in vresult.errors:
                     console.print(f"[red]invalid:[/red] {node_file.name}: {error}")
     if not errors_found:
         console.print("[green]all nodes valid.[/green]")

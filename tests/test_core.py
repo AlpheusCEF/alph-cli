@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+import subprocess
+
 from alph.core import (
     AlphConfig,
     check_idempotency,
@@ -15,6 +17,7 @@ from alph.core import (
     list_nodes,
     load_config,
     load_state,
+    resolve_default_pool,
     show_node,
     update_state,
     validate_node,
@@ -243,6 +246,119 @@ def test_load_config_cli_overrides_override_everything(tmp_path: Path) -> None:
         overrides={"creator": "cli@example.com"},
     )
     assert config.creator == "cli@example.com"
+
+
+def test_load_config_accumulates_registries_from_multiple_files(tmp_path: Path) -> None:
+    """Registries from global and pool configs are merged, not overwritten."""
+    global_dir = tmp_path / "global"
+    pool_dir = tmp_path / "pool"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {"household": "/registries/household"},
+    })
+    _write_config(pool_dir / ".alph" / "config.yaml", {
+        "registries": {"work": "/registries/work"},
+    })
+    config = load_config(global_config_dir=global_dir, pool_path=pool_dir)
+    assert config.registries == {
+        "household": "/registries/household",
+        "work": "/registries/work",
+    }
+
+
+def test_load_config_pool_registry_entry_overrides_global_for_same_id(tmp_path: Path) -> None:
+    """A pool-level registry entry for the same ID takes precedence over the global one."""
+    global_dir = tmp_path / "global"
+    pool_dir = tmp_path / "pool"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {"household": "/global/household"},
+    })
+    _write_config(pool_dir / ".alph" / "config.yaml", {
+        "registries": {"household": "/local/household"},
+    })
+    config = load_config(global_config_dir=global_dir, pool_path=pool_dir)
+    assert config.registries["household"] == "/local/household"
+
+
+def test_resolve_default_pool_returns_path_when_configured(tmp_path: Path) -> None:
+    """resolve_default_pool returns registry_path/pool_name when both are configured."""
+    registry_path = tmp_path / "registry"
+    config = AlphConfig(
+        default_registry="household",
+        default_pool="vehicles",
+        registries={"household": str(registry_path)},
+    )
+    assert resolve_default_pool(config) == registry_path / "vehicles"
+
+
+def test_resolve_default_pool_returns_none_when_no_default_registry(tmp_path: Path) -> None:
+    """resolve_default_pool returns None when default_registry is not set."""
+    config = AlphConfig(default_pool="vehicles")
+    assert resolve_default_pool(config) is None
+
+
+def test_resolve_default_pool_returns_none_when_registry_not_in_map(tmp_path: Path) -> None:
+    """resolve_default_pool returns None when the default registry ID isn't in registries."""
+    config = AlphConfig(default_registry="household", default_pool="vehicles")
+    assert resolve_default_pool(config) is None
+
+
+def test_resolve_default_pool_returns_none_when_no_default_pool(tmp_path: Path) -> None:
+    """resolve_default_pool returns None when default_pool is not set."""
+    config = AlphConfig(
+        default_registry="household",
+        registries={"household": "/registries/household"},
+    )
+    assert resolve_default_pool(config) is None
+
+
+def test_create_node_auto_commits_when_auto_commit_is_true(tmp_path: Path) -> None:
+    """create_node makes a git commit when auto_commit=True and pool is in a git repo."""
+    pool = _make_pool(tmp_path)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"],
+                   cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"],
+                   cwd=tmp_path, check=True, capture_output=True)
+
+    result = create_node(
+        pool_path=pool,
+        source="cli",
+        node_type="fixed",
+        context="Auto-committed node",
+        creator="test@example.com",
+        auto_commit=True,
+    )
+
+    log = subprocess.run(
+        ["git", "log", "--oneline"], cwd=tmp_path,
+        capture_output=True, text=True, check=True,
+    )
+    assert f"alph: add fixed node {result.node_id}" in log.stdout
+
+
+def test_create_node_does_not_commit_when_auto_commit_is_false(tmp_path: Path) -> None:
+    """create_node does not create a git commit when auto_commit=False (default)."""
+    pool = _make_pool(tmp_path)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"],
+                   cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"],
+                   cwd=tmp_path, check=True, capture_output=True)
+
+    create_node(
+        pool_path=pool,
+        source="cli",
+        node_type="fixed",
+        context="Not auto-committed",
+        creator="test@example.com",
+        auto_commit=False,
+    )
+
+    log = subprocess.run(
+        ["git", "log", "--oneline"], cwd=tmp_path,
+        capture_output=True, text=True,
+    )
+    assert log.returncode != 0  # no commits in repo
 
 
 def test_create_node_writes_fixed_node_to_snapshots(tmp_path: Path) -> None:
