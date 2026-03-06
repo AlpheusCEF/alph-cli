@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,12 +24,18 @@ class ValidationResult:
 
 @dataclass(frozen=True)
 class AlphConfig:
-    """Merged configuration from global, pool, and CLI override layers."""
+    """Merged configuration from global, pool, and CLI override layers.
+
+    registries maps registry ID -> path string. Accumulates across the config
+    cascade — later files add to (or override individual entries in) the map
+    rather than replacing it wholesale.
+    """
 
     creator: str = ""
     auto_commit: bool = False
     default_registry: str = ""
     default_pool: str = ""
+    registries: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -281,6 +288,7 @@ def load_config(
         Merged AlphConfig.
     """
     merged: dict[str, object] = {}
+    accumulated_registries: dict[str, str] = {}
 
     for config_path in (
         global_config_dir / "config.yaml",
@@ -289,7 +297,13 @@ def load_config(
         if config_path.exists():
             data = yaml.safe_load(config_path.read_text()) or {}
             if isinstance(data, dict):
-                merged.update(data)
+                # Accumulate registries separately so later files add to the
+                # map rather than replacing it entirely.
+                if isinstance(data.get("registries"), dict):
+                    accumulated_registries.update(
+                        {str(k): str(v) for k, v in data["registries"].items()}
+                    )
+                merged.update({k: v for k, v in data.items() if k != "registries"})
 
     if overrides:
         merged.update(overrides)
@@ -299,7 +313,22 @@ def load_config(
         auto_commit=bool(merged.get("auto_commit", False)),
         default_registry=str(merged.get("default_registry", "")),
         default_pool=str(merged.get("default_pool", "")),
+        registries=accumulated_registries,
     )
+
+
+def resolve_default_pool(config: AlphConfig) -> Path | None:
+    """Resolve the default pool path from config.
+
+    Returns the path ``registries[default_registry] / default_pool`` when all
+    three are set, or ``None`` if any piece is missing.
+    """
+    if not config.default_registry or not config.default_pool:
+        return None
+    registry_path_str = config.registries.get(config.default_registry)
+    if not registry_path_str:
+        return None
+    return Path(registry_path_str) / config.default_pool
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +465,7 @@ def create_node(
     tags: list[str] | None = None,
     related_to: list[str] | None = None,
     meta: dict[str, object] | None = None,
+    auto_commit: bool = False,
 ) -> NodeResult:
     """Create a context node and write it to the pool.
 
@@ -505,6 +535,21 @@ def create_node(
 
     path = directory / f"{node_id}.md"
     path.write_text(body)
+
+    if auto_commit:
+        try:
+            subprocess.run(
+                ["git", "-C", str(pool_path), "add", str(path)],
+                check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(pool_path), "commit", "-m",
+                 f"alph: add {node_type} node {node_id}"],
+                check=True, capture_output=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass  # not a git repo or git unavailable — silently skip
+
     return NodeResult(node_id=node_id, path=path)
 
 

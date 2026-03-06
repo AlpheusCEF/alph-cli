@@ -1,5 +1,6 @@
 """Behavior tests for the alph CLI."""
 
+import yaml
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -159,3 +160,57 @@ def test_add_with_status_writes_status_to_frontmatter(tmp_path: Path) -> None:
     frontmatter = extract_frontmatter(node_file.read_text())
     assert frontmatter is not None
     assert frontmatter["status"] == "archived"
+
+
+# ---------------------------------------------------------------------------
+# Config defaults wired into CLI
+# ---------------------------------------------------------------------------
+
+
+def _write_global_config(global_dir: Path, content: dict) -> None:
+    """Write a global alph config file."""
+    global_dir.mkdir(parents=True, exist_ok=True)
+    (global_dir / "config.yaml").write_text(yaml.dump(content))
+
+
+def test_add_uses_config_creator_when_creator_flag_omitted(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph add omits --creator when creator is set in global config."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {"creator": "config@example.com"})
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    pool = _init_registry_and_pool(tmp_path)
+    result = runner.invoke(app, ["add", "-c", "Node from config creator",
+                                 "--pool", str(pool)])
+    assert result.exit_code == 0
+    node_file = next((pool / "snapshots").glob("*.md"))
+    fm = extract_frontmatter(node_file.read_text())
+    assert fm is not None
+    assert fm["creator"] == "config@example.com"
+
+
+def test_list_uses_config_default_pool_when_pool_flag_omitted(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph list resolves pool from config when --pool is not given."""
+    pool = _init_registry_and_pool(tmp_path)
+    registry = tmp_path / "registry"
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "creator": "config@example.com",
+        "default_registry": "reg-01",
+        "default_pool": "test-pool",
+        "registries": {"reg-01": str(registry)},
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    runner.invoke(app, ["add", "-c", "Config-default-pool node",
+                        "--pool", str(pool), "--creator", "config@example.com"])
+    result = runner.invoke(app, ["list"])
+    assert result.exit_code == 0
+    assert "Config-default-pool node" in result.output
+
+
+def test_add_errors_when_no_creator_and_no_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph add exits non-zero when --creator is omitted and no config creator is set."""
+    global_dir = tmp_path / "empty-global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    pool = _init_registry_and_pool(tmp_path)
+    result = runner.invoke(app, ["add", "-c", "No creator node", "--pool", str(pool)])
+    assert result.exit_code != 0
