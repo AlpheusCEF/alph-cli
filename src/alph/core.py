@@ -386,17 +386,19 @@ def load_config(
         merged.update({k: v for k, v in data.items() if k != "registries"})
 
     # Global config is the base layer.
-    global_config = global_config_dir / "config.yaml"
+    global_config = (global_config_dir / "config.yaml").resolve()
     _apply(global_config)
 
     if cwd is not None:
         # Collect paths from cwd up to root, then reverse so root→cwd order
         # means cwd is applied last (most specific wins).
         walk_paths: list[Path] = []
-        current = Path(cwd)
+        seen: set[Path] = {global_config}
+        current = Path(cwd).resolve()
         while True:
             p = current / "config.yaml"
-            if p != global_config:
+            if p not in seen:
+                seen.add(p)
                 walk_paths.append(p)
             parent = current.parent
             if parent == current:
@@ -541,14 +543,16 @@ def list_config_paths(
     Returns:
         List of ConfigPathSummary, one per path that load_config would check.
     """
-    global_config = global_config_dir / "config.yaml"
+    global_config = (global_config_dir / "config.yaml").resolve()
 
     # Collect cwd walk paths (cwd → root), then reverse to get root → cwd.
     walk_paths: list[Path] = []
-    current = Path(cwd)
+    seen: set[Path] = {global_config}
+    current = Path(cwd).resolve()
     while True:
         p = current / "config.yaml"
-        if p != global_config:
+        if p not in seen:
+            seen.add(p)
             walk_paths.append(p)
         parent = current.parent
         if parent == current:

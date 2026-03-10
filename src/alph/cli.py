@@ -474,7 +474,7 @@ def cmd_validate(
     resolved_pool = _require_pool(pool, cfg)
 
     if not resolved_pool.exists():
-        console.print(f"[red]error:[/red] pool directory not found: {resolved_pool}")
+        console.print(f"[red]error:[/red] pool not found: {resolved_pool}")
         raise typer.Exit(code=1)
 
     errors_found = False
