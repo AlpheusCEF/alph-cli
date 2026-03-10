@@ -1,5 +1,6 @@
 """Behavior tests for the alph CLI."""
 
+import json
 from pathlib import Path
 
 import yaml
@@ -43,7 +44,7 @@ def test_registry_init_creates_home_directory_and_global_entry(tmp_path: Path, m
 
 
 def test_pool_init_creates_pool_structure(tmp_path: Path) -> None:
-    """alph pool init creates snapshots/, pointers/, and .alph/ directories."""
+    """alph pool init creates snapshots/ and live/ directories."""
     reg_dir = tmp_path / "reg"
     runner.invoke(app, ["registry", "init", "--pool-home", str(reg_dir),
                         "--id", "r1", "--context", "Test"])
@@ -78,6 +79,7 @@ def test_pool_list_shows_registered_pools(tmp_path: Path, monkeypatch) -> None: 
     ])
     result = runner.invoke(app, ["pool", "list", "--registry", "home", "--cwd", str(tmp_path)])
     assert result.exit_code == 0
+    assert "home" in result.output
     assert "vehicles" in result.output
     assert "appliances" in result.output
 
@@ -251,6 +253,44 @@ def test_list_includes_all_nodes_with_status_all(tmp_path: Path) -> None:
     assert "Active node" in result.output
     assert "Archived node" in result.output
     assert "Suppressed node" in result.output
+
+
+def test_list_output_json(tmp_path: Path) -> None:
+    """alph list -o json emits a JSON array of node objects."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, ["add", "-c", "JSON node", "--pool", str(pool), "--creator", "c@example.com"])
+    result = runner.invoke(app, ["list", "--pool", str(pool), "-o", "json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert isinstance(data, list)
+    assert len(data) == 1
+    assert data[0]["context"] == "JSON node"
+    assert "id" in data[0]
+    assert "type" in data[0]
+    assert "status" in data[0]
+    assert "timestamp" in data[0]
+
+
+def test_list_output_yaml(tmp_path: Path) -> None:
+    """alph list -o yaml emits YAML."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, ["add", "-c", "YAML node", "--pool", str(pool), "--creator", "c@example.com"])
+    result = runner.invoke(app, ["list", "--pool", str(pool), "-o", "yaml"])
+    assert result.exit_code == 0
+    data = yaml.safe_load(result.output)
+    assert isinstance(data, list)
+    assert data[0]["context"] == "YAML node"
+
+
+def test_list_output_csv(tmp_path: Path) -> None:
+    """alph list -o csv emits CSV with header row."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, ["add", "-c", "CSV node", "--pool", str(pool), "--creator", "c@example.com"])
+    result = runner.invoke(app, ["list", "--pool", str(pool), "-o", "csv"])
+    assert result.exit_code == 0
+    lines = result.output.strip().splitlines()
+    assert lines[0] == "id,type,status,context,timestamp"
+    assert "CSV node" in lines[1]
 
 
 def test_add_with_status_writes_status_to_frontmatter(tmp_path: Path) -> None:

@@ -174,7 +174,7 @@ _REQUIRED_NODE_FIELDS = {
     "creator",
 }
 
-_VALID_NODE_TYPES = {"snapshot", "live"}
+_VALID_NODE_TYPES = {"snapshot", "snap", "live"}
 _VALID_SCHEMA_VERSIONS = {"1"}
 _VALID_STATUSES = {"active", "archived", "suppressed"}
 _DEFAULT_STATUS = "active"
@@ -798,7 +798,7 @@ def init_pool(
     actual_reg_id, registry_home = found
 
     pool_path = registry_home / name
-    for subdir in ("snapshots", "live", ".alph"):
+    for subdir in ("snapshots", "live"):
         (pool_path / subdir).mkdir(parents=True, exist_ok=True)
 
     # Update the registry entry in the GLOBAL config to add pool info.
@@ -917,6 +917,8 @@ def create_node(
         writing a new file.
     """
     resolved_timestamp = timestamp or datetime.now(UTC).isoformat()
+    if node_type == "snap":
+        node_type = "snapshot"
     node_id = generate_id(source=source, context=context)
     logger.debug("create_node: id=%s type=%s pool=%s", node_id, node_type, pool_path)
 

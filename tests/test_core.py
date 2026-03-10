@@ -283,7 +283,7 @@ def test_collect_registries_home_path_points_to_registry_home_dir(tmp_path: Path
 
 
 def test_init_pool_creates_required_directories(tmp_path: Path) -> None:
-    """init_pool creates snapshots/, pointers/, and .alph/ inside the pool."""
+    """init_pool creates snapshots/ and live/ inside the pool."""
     global_dir = tmp_path / "global"
     init_registry(pool_home=tmp_path, registry_id="reg-01", context="Test registry",
                   global_config_dir=global_dir)
@@ -296,7 +296,6 @@ def test_init_pool_creates_required_directories(tmp_path: Path) -> None:
     )
     assert (result.pool_path / "snapshots").is_dir()
     assert (result.pool_path / "live").is_dir()
-    assert (result.pool_path / ".alph").is_dir()
 
 
 def test_init_pool_registers_pool_in_global_config(tmp_path: Path) -> None:

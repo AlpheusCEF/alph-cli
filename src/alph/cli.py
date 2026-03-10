@@ -1,5 +1,8 @@
 """Thin Typer wrapper exposing core.py as the `alph` CLI."""
 
+import csv
+import io
+import json
 import logging
 import os
 from pathlib import Path
@@ -69,9 +72,16 @@ def _global_config_dir() -> Path:
 
 def _load_cli_config(cwd: Path | None = None) -> AlphConfig:
     """Load merged config for a CLI invocation."""
+    # Use os.getcwd() rather than Path.cwd() so macOS symlinks (/tmp → /private/tmp)
+    # are not resolved — the user sees the path they typed, not the kernel path.
+    try:
+        effective_cwd = cwd or Path(os.getcwd())
+    except FileNotFoundError:
+        # Shell cwd was deleted; fall back to home so config walk doesn't crash.
+        effective_cwd = Path.home()
     return load_config(
         global_config_dir=_global_config_dir(),
-        cwd=cwd or Path.cwd(),
+        cwd=effective_cwd,
     )
 
 
@@ -277,12 +287,13 @@ def pool_list(
         return
 
     table = Table(show_header=True, header_style="bold")
+    table.add_column("registry", width=20)
     table.add_column("name", width=20)
     table.add_column("type", width=8)
     table.add_column("context")
     table.add_column("path")
     for s in summaries:
-        table.add_row(s.name, s.pool_type, s.context, str(s.path))
+        table.add_row(registry_id, s.name, s.pool_type, s.context, str(s.path))
     console.print(table)
 
 
@@ -293,13 +304,11 @@ def cmd_add(
     creator: str | None = typer.Option(None, "--creator", help="Creator email address. Defaults to creator from config."),
     node_type: str = typer.Option("snapshot", "--type", help="'snapshot' (or 'snap') or 'live'."),
     content: str = typer.Option("", "--content", help="Optional Markdown body."),
-    status: str | None = typer.Option(None, "--status", help="active, archived, or suppressed."),
+    status: str | None = typer.Option(None, "--status", help="active (default), archived (done — keep for history), or suppressed (temporarily hidden — still relevant)."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Create a context node in a pool."""
     _apply_verbose(verbose)
-    if node_type == "snap":
-        node_type = "snapshot"
     cfg = _load_cli_config()
     resolved_pool = _require_pool(pool, cfg)
     resolved_creator = _require_creator(creator, cfg)
@@ -332,13 +341,14 @@ def cmd_list(
         "--status",
         help="Filter by status: archived, suppressed, all, or comma-separated e.g. archived,suppressed.",
     ),
+    output: str = typer.Option("console", "-o", "--output", help="Output format: console (default), json, yaml, csv."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """List nodes in a pool with frontmatter summary.
 
     By default only active nodes are shown. Use -s to filter by a specific status:
-    -s archived            show only archived
-    -s suppressed          show only suppressed
+    -s archived            done — kept for history; excluded from active work
+    -s suppressed          temporarily hidden — still relevant, just noisy right now
     -s archived,suppressed show only archived and suppressed
     -s all                 show everything regardless of status
     """
@@ -359,6 +369,48 @@ def cmd_list(
         include_statuses = raw
 
     summaries = list_nodes(resolved_pool, include_statuses=include_statuses)
+
+    fmt = output.lower().strip()
+
+    if fmt == "json":
+        print(json.dumps([
+            {"id": s.node_id, "type": s.node_type, "status": s.status,
+             "context": s.context, "timestamp": s.timestamp}
+            for s in summaries
+        ], indent=2))
+        return
+
+    if fmt == "yaml":
+        import yaml as _yaml
+        print(_yaml.dump(
+            [{"id": s.node_id, "type": s.node_type, "status": s.status,
+              "context": s.context, "timestamp": s.timestamp}
+             for s in summaries],
+            default_flow_style=False, allow_unicode=True,
+        ), end="")
+        return
+
+    if fmt == "csv":
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["id", "type", "status", "context", "timestamp"])
+        for s in summaries:
+            writer.writerow([s.node_id, s.node_type, s.status, s.context, s.timestamp])
+        print(buf.getvalue(), end="")
+        return
+
+    # Console output (default).
+    pool_name = resolved_pool.name
+    registry_label = None
+    for reg_id, entry in cfg.registries.items():
+        if resolved_pool.parent == Path(entry.pool_home):
+            registry_label = reg_id
+            break
+    if registry_label:
+        console.print(f"[dim]registry:[/dim] {registry_label}  [dim]pool:[/dim] {pool_name}")
+    else:
+        console.print(f"[dim]pool:[/dim] {resolved_pool}")
+
     if not summaries:
         console.print("no nodes found.")
         return
@@ -369,7 +421,8 @@ def cmd_list(
     table.add_column("context")
     table.add_column("timestamp", width=22)
     for s in summaries:
-        table.add_row(s.node_id, s.node_type, s.status, s.context, s.timestamp)
+        display_type = "snap" if s.node_type == "snapshot" else s.node_type
+        table.add_row(s.node_id, display_type, s.status, s.context, s.timestamp)
     console.print(table)
 
 

@@ -76,8 +76,7 @@ def tool_add_node(
             primary field — make it specific enough to be useful in a list
             scan without reading the full body.
         creator: Email address of the person or system creating this node.
-        node_type: 'snapshot' (default) or 'live' for a resource that changes over time
-            to a resource that changes over time.
+        node_type: 'snapshot' (or 'snap') default, or 'live' for a resource that changes over time.
         content: Optional Markdown body text below the frontmatter.
         status: 'active' (default/omit), 'archived' (historical, excluded
             from default queries), or 'suppressed' (relevant but verbose,
