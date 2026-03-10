@@ -42,7 +42,7 @@ def test_tool_add_node_creates_node_and_returns_id(tmp_path: Path) -> None:
     )
     assert response["status"] == "created"
     assert len(response["node_id"]) == 12
-    assert response["node_type"] == "fixed"
+    assert response["node_type"] == "snapshot"
 
 
 def test_tool_add_node_reports_duplicate(tmp_path: Path) -> None:
@@ -93,7 +93,7 @@ def test_tool_add_node_accepts_status(tmp_path: Path) -> None:
 def test_tool_list_nodes_returns_active_nodes(tmp_path: Path) -> None:
     """tool_list_nodes returns active nodes as a list in the response."""
     pool = _setup_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Oil change", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z")
     response = tool_list_nodes(pool_path=str(pool))
@@ -104,10 +104,10 @@ def test_tool_list_nodes_returns_active_nodes(tmp_path: Path) -> None:
 def test_tool_list_nodes_excludes_archived_by_default(tmp_path: Path) -> None:
     """tool_list_nodes omits archived nodes unless include_statuses is passed."""
     pool = _setup_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Active note", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z")
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Archived note", creator="chase@example.com",
                 timestamp="2026-03-05T11:00:00Z", status="archived")
     response = tool_list_nodes(pool_path=str(pool))
@@ -118,10 +118,10 @@ def test_tool_list_nodes_excludes_archived_by_default(tmp_path: Path) -> None:
 def test_tool_list_nodes_includes_archived_when_requested(tmp_path: Path) -> None:
     """tool_list_nodes includes archived nodes when include_statuses contains archived."""
     pool = _setup_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Active note", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z")
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Archived note", creator="chase@example.com",
                 timestamp="2026-03-05T11:00:00Z", status="archived")
     response = tool_list_nodes(pool_path=str(pool), include_statuses=["archived"])
@@ -145,7 +145,7 @@ def test_tool_show_node_returns_full_node(tmp_path: Path) -> None:
     """tool_show_node returns complete node details for a known ID."""
     pool = _setup_pool(tmp_path)
     result = create_node(
-        pool_path=pool, source="cli", node_type="fixed",
+        pool_path=pool, source="cli", node_type="snapshot",
         context="Brake pads at 40%", creator="chase@example.com",
         timestamp="2026-03-05T10:00:00Z", content="Check again at 110k miles.",
     )
@@ -170,7 +170,7 @@ def test_tool_show_node_returns_not_found_for_unknown_id(tmp_path: Path) -> None
 def test_tool_validate_pool_passes_for_valid_nodes(tmp_path: Path) -> None:
     """tool_validate_pool returns valid=True for a pool with schema-compliant nodes."""
     pool = _setup_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Valid node", creator="chase@example.com")
     response = tool_validate_pool(pool_path=str(pool))
     assert response["valid"] is True

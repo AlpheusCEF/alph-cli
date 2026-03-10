@@ -141,6 +141,16 @@ class RegistrySummary:
 
 
 @dataclass(frozen=True)
+class PoolSummary:
+    """A pool entry as collected from registry config, for display."""
+
+    name: str
+    context: str
+    pool_type: str
+    path: Path
+
+
+@dataclass(frozen=True)
 class ConfigPathSummary:
     """Metadata about a single config file path in the discovery tree."""
 
@@ -164,7 +174,7 @@ _REQUIRED_NODE_FIELDS = {
     "creator",
 }
 
-_VALID_NODE_TYPES = {"fixed", "live"}
+_VALID_NODE_TYPES = {"snapshot", "live"}
 _VALID_SCHEMA_VERSIONS = {"1"}
 _VALID_STATUSES = {"active", "archived", "suppressed"}
 _DEFAULT_STATUS = "active"
@@ -412,6 +422,43 @@ def load_config(
         default_pool=str(merged.get("default_pool", "")),
         registries=accumulated_registries,
     )
+
+
+def list_pools(
+    registry_id_or_name: str,
+    *,
+    cfg: AlphConfig,
+) -> list[PoolSummary] | None:
+    """Return display summaries for all pools in a registry.
+
+    Reads pool metadata from ``cfg.registries`` — no additional file I/O.
+    Returns ``None`` if the registry is not found.
+
+    Args:
+        registry_id_or_name: Registry ID or human-readable name.
+        cfg: Merged config from ``load_config``.
+
+    Returns:
+        List of PoolSummary, one per registered pool, or None if registry not found.
+    """
+    found = find_registry_config(registry_id_or_name, cfg=cfg)
+    if found is None:
+        return None
+    reg_id, home = found
+    entry = cfg.registries[reg_id]
+    summaries: list[PoolSummary] = []
+    for pool_name, pool_data in entry.pools.items():
+        if not isinstance(pool_data, dict):
+            continue
+        summaries.append(
+            PoolSummary(
+                name=pool_name,
+                context=str(pool_data.get("context", "")),
+                pool_type=str(pool_data.get("type", "subdir")),
+                path=home / pool_name,
+            )
+        )
+    return summaries
 
 
 def find_registry_config(
@@ -750,7 +797,7 @@ def init_pool(
     actual_reg_id, registry_home = found
 
     pool_path = registry_home / name
-    for subdir in ("snapshots", "pointers", ".alph"):
+    for subdir in ("snapshots", "live", ".alph"):
         (pool_path / subdir).mkdir(parents=True, exist_ok=True)
 
     # Update the registry entry in the GLOBAL config to add pool info.
@@ -816,7 +863,7 @@ def check_idempotency(pool_path: Path, node_id: str) -> ExistingNode | None:
     Returns:
         ExistingNode with creator and timestamp if found, None otherwise.
     """
-    for subdir in ("snapshots", "pointers"):
+    for subdir in ("snapshots", "live"):
         directory = pool_path / subdir
         if not directory.exists():
             continue
@@ -848,13 +895,13 @@ def create_node(
     """Create a context node and write it to the pool.
 
     Generates a deterministic ID, checks for duplicates, then writes a
-    Markdown file with YAML frontmatter to ``snapshots/`` (fixed nodes) or
-    ``pointers/`` (live nodes).
+    Markdown file with YAML frontmatter to ``snapshots/`` (snapshot nodes) or
+    ``live/`` (live nodes).
 
     Args:
         pool_path: Root directory of the pool.
         source: Originating system (e.g. ``"cli"``).
-        node_type: ``"fixed"`` or ``"live"``.
+        node_type: ``"snapshot"`` or ``"live"``.
         context: Human/LLM-readable description.
         creator: Email address of the creator.
         timestamp: ISO-8601 timestamp; defaults to now (UTC).
@@ -875,7 +922,7 @@ def create_node(
     existing = check_idempotency(pool_path, node_id)
     if existing is not None:
         logger.debug("create_node: duplicate detected, created by %r", existing.creator)
-        subdir = "snapshots" if node_type == "fixed" else "pointers"
+        subdir = "snapshots" if node_type == "snapshot" else "live"
         path = pool_path / subdir / f"{node_id}.md"
         return NodeResult(
             node_id=node_id,
@@ -884,7 +931,7 @@ def create_node(
             existing_creator=existing.creator,
         )
 
-    subdir = "snapshots" if node_type == "fixed" else "pointers"
+    subdir = "snapshots" if node_type == "snapshot" else "live"
     directory = pool_path / subdir
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -947,19 +994,19 @@ def list_nodes(
 
     Default behaviour (``include_statuses=None``) returns only active nodes
     (those with ``status: active`` or no status field). Pass an explicit set
-    to expand the results — e.g. ``{"active", "archived"}`` or the full set
+    for exact filtering — e.g. ``{"archived"}`` for only archived nodes, or
     ``{"active", "archived", "suppressed"}`` for everything.
 
     Args:
         pool_path: Root directory of the pool.
-        include_statuses: Set of status values to include. None means active only.
+        include_statuses: Exact set of status values to include. None means active only.
 
     Returns:
         List of NodeSummary, one per matching node file.
     """
     allowed = include_statuses if include_statuses is not None else {_DEFAULT_STATUS}
     summaries: list[NodeSummary] = []
-    for subdir in ("snapshots", "pointers"):
+    for subdir in ("snapshots", "live"):
         directory = pool_path / subdir
         if not directory.exists():
             continue
@@ -993,7 +1040,7 @@ def show_node(pool_path: Path, node_id: str) -> NodeDetail | None:
     Returns:
         NodeDetail with all frontmatter fields and body, or None if not found.
     """
-    for subdir in ("snapshots", "pointers"):
+    for subdir in ("snapshots", "live"):
         directory = pool_path / subdir
         if not directory.exists():
             continue

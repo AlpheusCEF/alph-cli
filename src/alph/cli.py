@@ -13,12 +13,12 @@ from alph.core import (
     AlphConfig,
     collect_registries,
     create_node,
-    default_global_config_text,
     extract_frontmatter,
     init_pool,
     init_registry,
     list_config_paths,
     list_nodes,
+    list_pools,
     load_config,
     resolve_default_pool,
     resolve_pool_name,
@@ -242,18 +242,64 @@ def pool_init(
     console.print(f"  config:   {result.config_path}")
 
 
+@pool_app.command("list")
+def pool_list(
+    registry: str | None = typer.Option(None, "--registry", help="Registry ID or name. Defaults to default_registry from config."),
+    cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for config lookup."),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """List all pools registered under a registry."""
+    _apply_verbose(verbose)
+    resolved_cwd = cwd if cwd is not None else Path.cwd()
+    cfg = _load_cli_config(cwd=resolved_cwd)
+
+    registry_id = registry or cfg.default_registry or None
+    if not registry_id:
+        console.print(
+            "[red]error:[/red] --registry required, or set default_registry "
+            "in ~/.config/alph/config.yaml"
+        )
+        raise typer.Exit(code=1)
+
+    summaries = list_pools(registry_id, cfg=cfg)
+    if summaries is None:
+        console.print(f"[red]error:[/red] registry not found: {registry_id}")
+        known = collect_registries(cfg=cfg)
+        if known:
+            console.print("known registries:")
+            for reg in known:
+                console.print(f"  {reg.registry_id}" + (f" ({reg.name})" if reg.name else ""))
+        raise typer.Exit(code=1)
+
+    if not summaries:
+        console.print(f"no pools found in registry: {registry_id}")
+        console.print("  run [bold]alph pool init[/bold] to create one.")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("name", width=20)
+    table.add_column("type", width=8)
+    table.add_column("context")
+    table.add_column("path")
+    for s in summaries:
+        table.add_row(s.name, s.pool_type, s.context, str(s.path))
+    console.print(table)
+
+
 @app.command("add")
 def cmd_add(
     context: str = typer.Option(..., "-c", "--context", help="Context description for this node."),
     pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
     creator: str | None = typer.Option(None, "--creator", help="Creator email address. Defaults to creator from config."),
-    node_type: str = typer.Option("fixed", "--type", help="'fixed' or 'live'."),
+    node_type: str = typer.Option("snapshot", "--type", help="'snapshot' (or 'snap') or 'live'."),
     content: str = typer.Option("", "--content", help="Optional Markdown body."),
     status: str | None = typer.Option(None, "--status", help="active, archived, or suppressed."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Create a context node in a pool."""
     _apply_verbose(verbose)
+    if node_type == "snap":
+        node_type = "snapshot"
     cfg = _load_cli_config()
     resolved_pool = _require_pool(pool, cfg)
     resolved_creator = _require_creator(creator, cfg)
@@ -284,27 +330,33 @@ def cmd_list(
         [],
         "-s",
         "--status",
-        help="Expand beyond active: archived, suppressed, or all.",
+        help="Filter by status: archived, suppressed, all, or comma-separated e.g. archived,suppressed.",
     ),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """List nodes in a pool with frontmatter summary.
 
-    By default only active nodes are shown. Use -s to expand:
-    -s archived   includes active + archived
-    -s suppressed includes active + suppressed
-    -s all        includes everything
+    By default only active nodes are shown. Use -s to filter by a specific status:
+    -s archived            show only archived
+    -s suppressed          show only suppressed
+    -s archived,suppressed show only archived and suppressed
+    -s all                 show everything regardless of status
     """
     _apply_verbose(verbose)
     cfg = _load_cli_config()
     resolved_pool = _require_pool(pool, cfg)
 
-    if not status:
+    # Flatten any comma-separated values passed to -s (e.g. -s archived,suppressed).
+    raw: set[str] = set()
+    for token in status:
+        raw.update(v.strip() for v in token.split(",") if v.strip())
+
+    if not raw:
         include_statuses: set[str] = {"active"}
-    elif "all" in status:
+    elif "all" in raw:
         include_statuses = {"active", "archived", "suppressed"}
     else:
-        include_statuses = {"active"} | set(status)
+        include_statuses = raw
 
     summaries = list_nodes(resolved_pool, include_statuses=include_statuses)
     if not summaries:
@@ -365,7 +417,7 @@ def cmd_validate(
 
     errors_found = False
     node_count = 0
-    for subdir in ("snapshots", "pointers"):
+    for subdir in ("snapshots", "live"):
         directory = resolved_pool / subdir
         if not directory.exists():
             continue
@@ -381,12 +433,13 @@ def cmd_validate(
                 errors_found = True
                 for error in vresult.errors:
                     console.print(f"[red]invalid:[/red] {node_file.name}: {error}")
+    pool_name = resolved_pool.name
     if errors_found:
         raise typer.Exit(code=1)
     if node_count == 0:
-        console.print("no nodes found.")
+        console.print(f"no nodes found in pool {pool_name}.")
     else:
-        console.print("[green]all nodes valid.[/green]")
+        console.print(f"[green]{node_count} node{'s' if node_count != 1 else ''} in pool {pool_name} valid.[/green]")
 
 
 @config_app.command("list")
@@ -440,18 +493,39 @@ def config_show(
         console.print(f"[bold]{config_path}[/bold]\n")
         console.print(Syntax(config_path.read_text(), "yaml", theme="monokai", line_numbers=False))
     else:
-        console.print(f"[yellow]not found:[/yellow] {config_path}\n")
-        console.print(
-            "No config file exists at this path yet. To bootstrap a registry\n"
-            "and create the global config in one step:\n\n"
-            "  [bold]alph registry init \\\\\n"
-            "    --home <registry-dir> \\\\\n"
-            "    --id <registry-id> \\\\\n"
-            "    --context \"<description>\"[/bold]\n\n"
-            "This writes the registry path into the global config and sets it\n"
-            "as the default. Or create the config file manually using this template:\n"
+        console.print(f"[yellow]not found:[/yellow] {config_path}")
+        console.print("  run [bold]alph registry init[/bold] to create a registry and generate this file.")
+        console.print("  run [bold]alph defaults[/bold] to see what is currently configured.")
+
+
+@app.command("defaults")
+def cmd_defaults(
+    cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for config lookup."),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Show the currently resolved defaults (registry, pool, creator)."""
+    _apply_verbose(verbose)
+    resolved_cwd = cwd if cwd is not None else Path.cwd()
+    cfg = _load_cli_config(cwd=resolved_cwd)
+
+    def _val(v: str, fallback: str = "[dim]not set[/dim]") -> str:
+        return v if v else fallback
+
+    console.print("[bold]alph defaults[/bold]")
+    console.print(f"  creator:          {_val(cfg.creator)}")
+    console.print(f"  default_registry: {_val(cfg.default_registry)}")
+    console.print(f"  default_pool:     {_val(cfg.default_pool)}")
+    console.print(f"  auto_commit:      {cfg.auto_commit}")
+
+    if cfg.default_registry and cfg.default_registry in cfg.registries:
+        entry = cfg.registries[cfg.default_registry]
+        pool_path = (
+            str(Path(entry.home) / cfg.default_pool) if cfg.default_pool else "[dim]not set[/dim]"
         )
-        console.print(Syntax(default_global_config_text(), "yaml", theme="monokai", line_numbers=False))
+        console.print(f"  resolved pool:    {pool_path}")
+
+    console.print()
+    console.print("  run [bold]alph config list[/bold] to see which config files are active.")
 
 
 # Short command aliases (hidden from --help)

@@ -42,8 +42,8 @@ mcp = fastmcp.FastMCP(
     instructions=(
         "Alpheus Context Engine Framework. Use these tools to create, list, "
         "show, and validate context nodes in a pool. "
-        "A pool is a directory containing snapshots/ (fixed nodes) and "
-        "pointers/ (live nodes). "
+        "A pool is a directory containing snapshots/ (snapshot nodes) and "
+        "live/ (live nodes). "
         "Always use tool_list_nodes to discover existing nodes before adding "
         "new ones — alph deduplicates by ID but a quick scan avoids surprises. "
         "Use tool_show_node to read full content including body text. "
@@ -62,7 +62,7 @@ def tool_add_node(
     pool_path: str,
     context: str,
     creator: str,
-    node_type: str = "fixed",
+    node_type: str = "snapshot",
     content: str = "",
     status: str | None = None,
     tags: list[str] | None = None,
@@ -76,7 +76,7 @@ def tool_add_node(
             primary field — make it specific enough to be useful in a list
             scan without reading the full body.
         creator: Email address of the person or system creating this node.
-        node_type: 'fixed' for a snapshot (default) or 'live' for a pointer
+        node_type: 'snapshot' (default) or 'live' for a resource that changes over time
             to a resource that changes over time.
         content: Optional Markdown body text below the frontmatter.
         status: 'active' (default/omit), 'archived' (historical, excluded
@@ -90,8 +90,8 @@ def tool_add_node(
         dict with keys:
             status: 'created' or 'duplicate'
             node_id: 12-char ID
-            node_type: 'fixed' or 'live'
-            path: absolute path to the written file
+            node_type: 'snapshot' or 'live'
+            path: absolute path to the written file (snapshots/ or live/)
             node_status: the status value written to frontmatter (if set)
             existing_creator: set when status is 'duplicate'
     """
@@ -233,7 +233,7 @@ def tool_validate_pool(
     pool = Path(pool_path)
     all_errors: list[dict[str, Any]] = []
 
-    for subdir in ("snapshots", "pointers"):
+    for subdir in ("snapshots", "live"):
         directory = pool / subdir
         if not directory.exists():
             continue
@@ -276,7 +276,7 @@ def add_node(
     pool_path: str,
     context: str,
     creator: str,
-    node_type: str = "fixed",
+    node_type: str = "snapshot",
     content: str = "",
     status: str | None = None,
     tags: list[str] | None = None,

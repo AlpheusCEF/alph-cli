@@ -57,7 +57,36 @@ def test_pool_init_creates_pool_structure(tmp_path: Path) -> None:
     assert result.exit_code == 0
     pool = reg_dir / "vehicles"
     assert (pool / "snapshots").is_dir()
-    assert (pool / "pointers").is_dir()
+    assert (pool / "live").is_dir()
+
+
+def test_pool_list_shows_registered_pools(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph pool list shows all pools registered under a registry."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    reg_dir = tmp_path / "reg"
+    runner.invoke(app, [
+        "registry", "init", "--home", str(reg_dir), "--id", "home", "--context", "Home",
+    ])
+    runner.invoke(app, [
+        "pool", "init", "--registry", "home", "--name", "vehicles",
+        "--context", "Vehicles", "--cwd", str(tmp_path),
+    ])
+    runner.invoke(app, [
+        "pool", "init", "--registry", "home", "--name", "appliances",
+        "--context", "Appliances", "--cwd", str(tmp_path),
+    ])
+    result = runner.invoke(app, ["pool", "list", "--registry", "home", "--cwd", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "vehicles" in result.output
+    assert "appliances" in result.output
+
+
+def test_pool_list_errors_when_registry_not_found(tmp_path: Path) -> None:
+    """alph pool list exits non-zero when registry ID is unknown."""
+    result = runner.invoke(app, ["pool", "list", "--registry", "ghost", "--cwd", str(tmp_path)])
+    assert result.exit_code != 0
+    assert "ghost" in result.output
 
 
 def test_pool_init_errors_when_registry_not_found(tmp_path: Path) -> None:
@@ -180,7 +209,7 @@ def test_list_excludes_archived_by_default(tmp_path: Path) -> None:
 
 
 def test_list_includes_archived_with_status_flag(tmp_path: Path) -> None:
-    """alph list -s archived includes active and archived nodes."""
+    """-s archived shows only archived nodes, not active ones."""
     pool = _init_registry_and_pool(tmp_path)
     runner.invoke(app, ["add", "-c", "Active node",
                         "--pool", str(pool), "--creator", "chase@example.com"])
@@ -188,8 +217,24 @@ def test_list_includes_archived_with_status_flag(tmp_path: Path) -> None:
                         "--pool", str(pool), "--creator", "chase@example.com"])
     result = runner.invoke(app, ["list", "--pool", str(pool), "-s", "archived"])
     assert result.exit_code == 0
-    assert "Active node" in result.output
+    assert "Active node" not in result.output
     assert "Archived node" in result.output
+
+
+def test_list_comma_separated_status_filter(tmp_path: Path) -> None:
+    """-s archived,suppressed shows only archived and suppressed, not active."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, ["add", "-c", "Active node",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    runner.invoke(app, ["add", "-c", "Archived node", "--status", "archived",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    runner.invoke(app, ["add", "-c", "Suppressed node", "--status", "suppressed",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    result = runner.invoke(app, ["list", "--pool", str(pool), "-s", "archived,suppressed"])
+    assert result.exit_code == 0
+    assert "Active node" not in result.output
+    assert "Archived node" in result.output
+    assert "Suppressed node" in result.output
 
 
 def test_list_includes_all_nodes_with_status_all(tmp_path: Path) -> None:
@@ -383,11 +428,39 @@ def test_config_show_prints_bootstrap_notice_for_missing_file(tmp_path: Path, mo
 
 
 def test_config_show_bootstrap_notice_includes_template_keys(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """alph config show bootstrap notice includes all standard config keys."""
+    """alph config show on a missing file prints not-found message and hints."""
     global_dir = tmp_path / "global"
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     config_path = global_dir / "config.yaml"
     result = runner.invoke(app, ["config", "show", str(config_path)])
     assert result.exit_code == 0
-    assert "creator" in result.output
-    assert "default_registry" in result.output
+    assert "not found" in result.output
+    assert "registry init" in result.output
+    assert "alph defaults" in result.output
+
+
+def test_defaults_shows_configured_values(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph defaults shows the resolved creator, registry, pool, and auto_commit."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    reg_dir = tmp_path / "reg"
+    runner.invoke(app, [
+        "registry", "init", "--home", str(reg_dir), "--id", "home", "--context", "Home",
+    ])
+    runner.invoke(app, [
+        "pool", "init", "--registry", "home", "--name", "vehicles",
+        "--context", "Vehicles", "--cwd", str(tmp_path),
+    ])
+    result = runner.invoke(app, ["defaults", "--cwd", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "home" in result.output
+    assert "vehicles" in result.output
+
+
+def test_defaults_shows_not_set_when_unconfigured(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph defaults shows 'not set' placeholders when no config exists."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["defaults", "--cwd", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "not set" in result.output

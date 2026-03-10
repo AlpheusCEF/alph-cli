@@ -33,7 +33,7 @@ def _make_pool(base: Path) -> Path:
     """Create a minimal pool directory structure."""
     pool = base / "my-pool"
     (pool / "snapshots").mkdir(parents=True)
-    (pool / "pointers").mkdir(parents=True)
+    (pool / "live").mkdir(parents=True)
     return pool
 
 
@@ -41,7 +41,7 @@ def _write_node(directory: Path, node_id: str, creator: str, timestamp: str) -> 
     """Write a minimal node file into a pool subdirectory."""
     content = (
         f"---\nschema_version: '1'\nid: {node_id}\ntimestamp: '{timestamp}'\n"
-        f"source: cli\nnode_type: fixed\ncontext: test node\ncreator: {creator}\n---\n"
+        f"source: cli\nnode_type: snapshot\ncontext: test node\ncreator: {creator}\n---\n"
     )
     (directory / f"{node_id}.md").write_text(content)
 
@@ -65,7 +65,7 @@ def test_check_idempotency_finds_node_in_snapshots(tmp_path: Path) -> None:
 def test_check_idempotency_finds_node_in_pointers(tmp_path: Path) -> None:
     """check_idempotency returns existing node metadata when ID is found in pointers/."""
     pool = _make_pool(tmp_path)
-    _write_node(pool / "pointers", "a1b2c3d4e5f6", "chase@example.com", "2026-03-05T10:00:00Z")
+    _write_node(pool / "live", "a1b2c3d4e5f6", "chase@example.com", "2026-03-05T10:00:00Z")
     result = check_idempotency(pool, "a1b2c3d4e5f6")
     assert result is not None
     assert result.creator == "chase@example.com"
@@ -107,7 +107,7 @@ def test_list_nodes_returns_empty_for_empty_pool(tmp_path: Path) -> None:
 def test_list_nodes_returns_summary_for_each_node(tmp_path: Path) -> None:
     """list_nodes returns one NodeSummary per node file in the pool."""
     pool = _make_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Oil change", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z")
     create_node(pool_path=pool, source="cli", node_type="live",
@@ -123,21 +123,21 @@ def test_list_nodes_returns_summary_for_each_node(tmp_path: Path) -> None:
 def test_list_nodes_summary_has_expected_fields(tmp_path: Path) -> None:
     """Each NodeSummary from list_nodes has id, context, node_type, and timestamp."""
     pool = _make_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Brake pads at 40%", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z")
     summaries = list_nodes(pool)
     s = summaries[0]
     assert s.node_id
     assert s.context == "Brake pads at 40%"
-    assert s.node_type == "fixed"
+    assert s.node_type == "snapshot"
     assert s.timestamp
 
 
 def test_show_node_returns_full_content_by_id(tmp_path: Path) -> None:
     """show_node returns the full NodeDetail for a matching node ID."""
     pool = _make_pool(tmp_path)
-    result = create_node(pool_path=pool, source="cli", node_type="fixed",
+    result = create_node(pool_path=pool, source="cli", node_type="snapshot",
                          context="Oil change at Valvoline", creator="chase@example.com",
                          timestamp="2026-03-05T10:00:00Z", content="Full synthetic 0W-20.")
     detail = show_node(pool, result.node_id)
@@ -295,7 +295,7 @@ def test_init_pool_creates_required_directories(tmp_path: Path) -> None:
         global_config_dir=global_dir,
     )
     assert (result.pool_path / "snapshots").is_dir()
-    assert (result.pool_path / "pointers").is_dir()
+    assert (result.pool_path / "live").is_dir()
     assert (result.pool_path / ".alph").is_dir()
 
 
@@ -609,7 +609,7 @@ def test_create_node_auto_commits_when_auto_commit_is_true(tmp_path: Path) -> No
     result = create_node(
         pool_path=pool,
         source="cli",
-        node_type="fixed",
+        node_type="snapshot",
         context="Auto-committed node",
         creator="test@example.com",
         auto_commit=True,
@@ -619,7 +619,7 @@ def test_create_node_auto_commits_when_auto_commit_is_true(tmp_path: Path) -> No
         ["git", "log", "--oneline"], cwd=tmp_path,
         capture_output=True, text=True, check=True,
     )
-    assert f"alph: add fixed node {result.node_id}" in log.stdout
+    assert f"alph: add snapshot node {result.node_id}" in log.stdout
 
 
 def test_create_node_does_not_commit_when_auto_commit_is_false(tmp_path: Path) -> None:
@@ -634,7 +634,7 @@ def test_create_node_does_not_commit_when_auto_commit_is_false(tmp_path: Path) -
     create_node(
         pool_path=pool,
         source="cli",
-        node_type="fixed",
+        node_type="snapshot",
         context="Not auto-committed",
         creator="test@example.com",
         auto_commit=False,
@@ -653,7 +653,7 @@ def test_create_node_writes_fixed_node_to_snapshots(tmp_path: Path) -> None:
     result = create_node(
         pool_path=pool,
         source="cli",
-        node_type="fixed",
+        node_type="snapshot",
         context="Oil change at Valvoline, full synthetic",
         creator="chase@example.com",
     )
@@ -672,7 +672,7 @@ def test_create_node_writes_live_node_to_pointers(tmp_path: Path) -> None:
         context="Jira ticket AUTH-123",
         creator="chase@example.com",
     )
-    assert result.path.parent == pool / "pointers"
+    assert result.path.parent == pool / "live"
 
 
 def test_create_node_frontmatter_is_valid(tmp_path: Path) -> None:
@@ -681,7 +681,7 @@ def test_create_node_frontmatter_is_valid(tmp_path: Path) -> None:
     result = create_node(
         pool_path=pool,
         source="cli",
-        node_type="fixed",
+        node_type="snapshot",
         context="Brake pads at 40%, replace by 110k",
         creator="chase@example.com",
     )
@@ -697,7 +697,7 @@ def test_create_node_timestamp_stored_as_string(tmp_path: Path) -> None:
     result = create_node(
         pool_path=pool,
         source="cli",
-        node_type="fixed",
+        node_type="snapshot",
         context="Some context",
         creator="chase@example.com",
     )
@@ -712,7 +712,7 @@ def test_create_node_returns_duplicate_error_when_node_exists(tmp_path: Path) ->
     kwargs = dict(
         pool_path=pool,
         source="cli",
-        node_type="fixed",
+        node_type="snapshot",
         context="Oil change at Valvoline",
         creator="chase@example.com",
         timestamp="2026-03-05T10:00:00Z",
@@ -734,7 +734,7 @@ def test_create_node_deduplicates_without_explicit_timestamp(tmp_path: Path) -> 
     kwargs = dict(
         pool_path=pool,
         source="cli",
-        node_type="fixed",
+        node_type="snapshot",
         context="Purchased 2022 Subaru Outback Wilderness",
         creator="test@example.com",
     )
@@ -790,7 +790,7 @@ def test_valid_node_passes_validation() -> None:
         "id": "a1b2c3d4e5f6",
         "timestamp": "2026-03-05T10:00:00Z",
         "source": "cli",
-        "node_type": "fixed",
+        "node_type": "snapshot",
         "context": "Oil change at Valvoline, full synthetic",
         "creator": "chase@example.com",
     }
@@ -815,7 +815,7 @@ def test_node_invalid_node_type_fails_validation() -> None:
         "id": "a1b2c3d4e5f6",
         "timestamp": "2026-03-05T10:00:00Z",
         "source": "cli",
-        "node_type": "snapshot",
+        "node_type": "bogus",
         "context": "Some context",
         "creator": "chase@example.com",
     }
@@ -831,7 +831,7 @@ def test_node_invalid_schema_version_fails_validation() -> None:
         "id": "a1b2c3d4e5f6",
         "timestamp": "2026-03-05T10:00:00Z",
         "source": "cli",
-        "node_type": "fixed",
+        "node_type": "snapshot",
         "context": "Some context",
         "creator": "chase@example.com",
     }
@@ -867,7 +867,7 @@ def _base_node(**overrides: object) -> dict[str, object]:
         "id": "a1b2c3d4e5f6",
         "timestamp": "2026-03-05T10:00:00Z",
         "source": "cli",
-        "node_type": "fixed",
+        "node_type": "snapshot",
         "context": "Oil change",
         "creator": "chase@example.com",
     }
@@ -912,7 +912,7 @@ def test_create_node_writes_status_to_frontmatter(tmp_path: Path) -> None:
     result = create_node(
         pool_path=pool,
         source="cli",
-        node_type="fixed",
+        node_type="snapshot",
         context="Archived maintenance note",
         creator="chase@example.com",
         status="archived",
@@ -928,7 +928,7 @@ def test_create_node_omits_status_from_frontmatter_when_not_provided(tmp_path: P
     result = create_node(
         pool_path=pool,
         source="cli",
-        node_type="fixed",
+        node_type="snapshot",
         context="Normal node",
         creator="chase@example.com",
     )
@@ -940,10 +940,10 @@ def test_create_node_omits_status_from_frontmatter_when_not_provided(tmp_path: P
 def test_list_nodes_excludes_archived_by_default(tmp_path: Path) -> None:
     """list_nodes omits archived nodes from default results."""
     pool = _make_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Active node", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z")
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Archived node", creator="chase@example.com",
                 timestamp="2026-03-05T11:00:00Z", status="archived")
     summaries = list_nodes(pool)
@@ -955,10 +955,10 @@ def test_list_nodes_excludes_archived_by_default(tmp_path: Path) -> None:
 def test_list_nodes_excludes_suppressed_by_default(tmp_path: Path) -> None:
     """list_nodes omits suppressed nodes from default results."""
     pool = _make_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Active node", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z")
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Suppressed node", creator="chase@example.com",
                 timestamp="2026-03-05T11:00:00Z", status="suppressed")
     summaries = list_nodes(pool)
@@ -970,10 +970,10 @@ def test_list_nodes_excludes_suppressed_by_default(tmp_path: Path) -> None:
 def test_list_nodes_includes_archived_when_requested(tmp_path: Path) -> None:
     """list_nodes includes archived nodes when include_statuses contains archived."""
     pool = _make_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Active node", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z")
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Archived node", creator="chase@example.com",
                 timestamp="2026-03-05T11:00:00Z", status="archived")
     summaries = list_nodes(pool, include_statuses={"active", "archived"})
@@ -985,13 +985,13 @@ def test_list_nodes_includes_archived_when_requested(tmp_path: Path) -> None:
 def test_list_nodes_includes_all_statuses_when_all_requested(tmp_path: Path) -> None:
     """list_nodes returns every node when include_statuses contains all three values."""
     pool = _make_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Active node", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z")
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Archived node", creator="chase@example.com",
                 timestamp="2026-03-05T11:00:00Z", status="archived")
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Suppressed node", creator="chase@example.com",
                 timestamp="2026-03-05T12:00:00Z", status="suppressed")
     summaries = list_nodes(pool, include_statuses={"active", "archived", "suppressed"})
@@ -1001,7 +1001,7 @@ def test_list_nodes_includes_all_statuses_when_all_requested(tmp_path: Path) -> 
 def test_node_summary_exposes_status(tmp_path: Path) -> None:
     """NodeSummary from list_nodes includes the status field."""
     pool = _make_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Archived node", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z", status="archived")
     summaries = list_nodes(pool, include_statuses={"active", "archived"})
@@ -1011,7 +1011,7 @@ def test_node_summary_exposes_status(tmp_path: Path) -> None:
 def test_node_summary_status_defaults_to_active_when_absent(tmp_path: Path) -> None:
     """NodeSummary reports status as active when frontmatter has no status field."""
     pool = _make_pool(tmp_path)
-    create_node(pool_path=pool, source="cli", node_type="fixed",
+    create_node(pool_path=pool, source="cli", node_type="snapshot",
                 context="Normal node", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z")
     summaries = list_nodes(pool)
