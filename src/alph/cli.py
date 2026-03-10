@@ -39,7 +39,14 @@ app.add_typer(registry_app, name="registry")
 app.add_typer(pool_app, name="pool")
 app.add_typer(config_app, name="config")
 
-console = Console(width=200)
+def _console_width() -> int:
+    try:
+        return min(200, os.get_terminal_size().columns)
+    except (ValueError, OSError):
+        return 120
+
+
+console = Console(width=_console_width())
 
 _verbose: bool = False
 
@@ -423,11 +430,11 @@ def cmd_list(
     if not summaries:
         console.print("no nodes found.")
         return
-    table = Table(show_header=True, header_style="bold")
+    table = Table(show_header=True, header_style="bold", expand=False)
     table.add_column("ID", style="dim", width=14)
     table.add_column("type", width=7)
     table.add_column("status", width=10)
-    table.add_column("context")
+    table.add_column("context", max_width=80)
     table.add_column("timestamp", width=22)
     for s in summaries:
         display_type = "snap" if s.node_type == "snapshot" else s.node_type
