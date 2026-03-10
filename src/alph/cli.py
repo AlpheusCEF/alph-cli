@@ -1,6 +1,7 @@
 """Thin Typer wrapper exposing core.py as the `alph` CLI."""
 
 import csv
+import importlib.metadata
 import io
 import json
 import logging
@@ -54,9 +55,17 @@ def _apply_verbose(verbose: bool) -> None:
         logging.getLogger().setLevel(logging.DEBUG)
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        version = importlib.metadata.version("alph-cli")
+        typer.echo(f"alph {version}")
+        raise typer.Exit()
+
+
 @app.callback()
 def _main(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging.", is_eager=False),
+    version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True, help="Show version and exit."),
 ) -> None:
     """Alpheus Context Engine Framework."""
     if not logging.root.handlers:
