@@ -157,7 +157,7 @@ def test_init_registry_creates_registry_entry_in_global_config(tmp_path: Path) -
     """init_registry writes the registry declaration into the global config, not the home dir."""
     global_dir = tmp_path / "global"
     result = init_registry(
-        home=tmp_path / "my-registry",
+        pool_home=tmp_path / "my-registry",
         registry_id="reg-01",
         context="Personal context pools",
         global_config_dir=global_dir,
@@ -168,8 +168,8 @@ def test_init_registry_creates_registry_entry_in_global_config(tmp_path: Path) -
     config = yaml.safe_load(result.config_path.read_text())
     entry = config["registries"]["reg-01"]
     assert entry["context"] == "Personal context pools"
-    assert entry["home"] == str(tmp_path / "my-registry")
-    # No config.yaml is written inside the home directory.
+    assert entry["pool_home"] == str(tmp_path / "my-registry")
+    # No config.yaml is written inside the pool_home directory.
     assert not (tmp_path / "my-registry" / "config.yaml").exists()
 
 
@@ -177,7 +177,7 @@ def test_init_registry_validates_its_own_output(tmp_path: Path) -> None:
     """init_registry result passes registry validation."""
     global_dir = tmp_path / "global"
     result = init_registry(
-        home=tmp_path / "my-registry",
+        pool_home=tmp_path / "my-registry",
         registry_id="reg-01",
         context="Personal context pools",
         global_config_dir=global_dir,
@@ -189,7 +189,7 @@ def test_init_registry_sets_default_when_no_existing_default(tmp_path: Path) -> 
     """init_registry writes default_registry and registry entry into the global config."""
     global_dir = tmp_path / "global"
     result = init_registry(
-        home=tmp_path / "my-registry",
+        pool_home=tmp_path / "my-registry",
         registry_id="reg-01",
         context="Test registry",
         global_config_dir=global_dir,
@@ -205,7 +205,7 @@ def test_init_registry_does_not_override_existing_default(tmp_path: Path) -> Non
     global_dir = tmp_path / "global"
     _write_config(global_dir / "config.yaml", {"default_registry": "existing"})
     result = init_registry(
-        home=tmp_path / "my-registry",
+        pool_home=tmp_path / "my-registry",
         registry_id="reg-01",
         context="Test registry",
         global_config_dir=global_dir,
@@ -219,7 +219,7 @@ def test_init_registry_does_not_override_existing_default(tmp_path: Path) -> Non
 
 def test_find_registry_config_finds_by_id_in_cfg(tmp_path: Path) -> None:
     """find_registry_config returns (actual_id, home_path) when registry ID is in cfg."""
-    cfg = AlphConfig(registries={"reg-01": RegistryEntry(home=str(tmp_path / "home"))})
+    cfg = AlphConfig(registries={"reg-01": RegistryEntry(pool_home=str(tmp_path / "home"))})
     result = find_registry_config("reg-01", cfg=cfg)
     assert result is not None
     actual_id, home = result
@@ -230,7 +230,7 @@ def test_find_registry_config_finds_by_id_in_cfg(tmp_path: Path) -> None:
 def test_find_registry_config_finds_by_name_from_cfg(tmp_path: Path) -> None:
     """find_registry_config matches on registry name from cfg — no file I/O needed."""
     reg_home = tmp_path / "home"
-    cfg = AlphConfig(registries={"reg-01": RegistryEntry(home=str(reg_home), name="My Registry")})
+    cfg = AlphConfig(registries={"reg-01": RegistryEntry(pool_home=str(reg_home), name="My Registry")})
     result = find_registry_config("My Registry", cfg=cfg)
     assert result is not None
     actual_id, home = result
@@ -240,7 +240,7 @@ def test_find_registry_config_finds_by_name_from_cfg(tmp_path: Path) -> None:
 
 def test_find_registry_config_returns_none_when_not_in_cfg(tmp_path: Path) -> None:
     """find_registry_config returns None when the ID is not in cfg.registries."""
-    cfg = AlphConfig(registries={"other-reg": RegistryEntry(home=str(tmp_path))})
+    cfg = AlphConfig(registries={"other-reg": RegistryEntry(pool_home=str(tmp_path))})
     assert find_registry_config("nonexistent", cfg=cfg) is None
 
 
@@ -259,7 +259,7 @@ def test_collect_registries_returns_summaries_from_cfg(tmp_path: Path) -> None:
     """collect_registries returns one RegistrySummary per entry in cfg.registries."""
     reg_home = tmp_path / "home"
     cfg = AlphConfig(registries={
-        "reg-01": RegistryEntry(home=str(reg_home), context="My context", name="My Registry"),
+        "reg-01": RegistryEntry(pool_home=str(reg_home), context="My context", name="My Registry"),
     })
     summaries = collect_registries(cfg=cfg)
     assert len(summaries) == 1
@@ -277,7 +277,7 @@ def test_collect_registries_returns_empty_when_no_registries(tmp_path: Path) -> 
 def test_collect_registries_home_path_points_to_registry_home_dir(tmp_path: Path) -> None:
     """collect_registries reports home_path as the registry home directory."""
     reg_home = tmp_path / "home"
-    cfg = AlphConfig(registries={"reg-01": RegistryEntry(home=str(reg_home), context="Test")})
+    cfg = AlphConfig(registries={"reg-01": RegistryEntry(pool_home=str(reg_home), context="Test")})
     summaries = collect_registries(cfg=cfg)
     assert summaries[0].home_path == reg_home
 
@@ -285,7 +285,7 @@ def test_collect_registries_home_path_points_to_registry_home_dir(tmp_path: Path
 def test_init_pool_creates_required_directories(tmp_path: Path) -> None:
     """init_pool creates snapshots/, pointers/, and .alph/ inside the pool."""
     global_dir = tmp_path / "global"
-    init_registry(home=tmp_path, registry_id="reg-01", context="Test registry",
+    init_registry(pool_home=tmp_path, registry_id="reg-01", context="Test registry",
                   global_config_dir=global_dir)
     result = init_pool(
         registry_id="reg-01",
@@ -302,7 +302,7 @@ def test_init_pool_creates_required_directories(tmp_path: Path) -> None:
 def test_init_pool_registers_pool_in_global_config(tmp_path: Path) -> None:
     """init_pool adds the pool entry to the global config under the registry entry."""
     global_dir = tmp_path / "global"
-    init_registry(home=tmp_path, registry_id="reg-01", context="Test registry",
+    init_registry(pool_home=tmp_path, registry_id="reg-01", context="Test registry",
                   global_config_dir=global_dir)
     result = init_pool(
         registry_id="reg-01",
@@ -322,7 +322,7 @@ def test_init_pool_registers_pool_in_global_config(tmp_path: Path) -> None:
 def test_init_pool_validates_its_own_output(tmp_path: Path) -> None:
     """init_pool result passes registry validation."""
     global_dir = tmp_path / "global"
-    init_registry(home=tmp_path, registry_id="reg-01", context="Test registry",
+    init_registry(pool_home=tmp_path, registry_id="reg-01", context="Test registry",
                   global_config_dir=global_dir)
     result = init_pool(
         registry_id="reg-01",
@@ -365,7 +365,7 @@ def test_init_pool_bootstrap_creates_registry_and_pool(tmp_path: Path) -> None:
 def test_init_pool_writes_default_pool_to_global_config(tmp_path: Path) -> None:
     """init_pool sets default_pool in the global config when this is the default registry."""
     global_dir = tmp_path / "global"
-    init_registry(home=tmp_path, registry_id="reg-01", context="Test",
+    init_registry(pool_home=tmp_path, registry_id="reg-01", context="Test",
                   global_config_dir=global_dir)
     init_pool(
         registry_id="reg-01",
@@ -384,7 +384,7 @@ def test_init_pool_does_not_override_existing_default_pool(tmp_path: Path) -> No
     _write_config(global_dir / "config.yaml", {
         "default_registry": "reg-01",
         "default_pool": "existing-pool",
-        "registries": {"reg-01": {"home": str(tmp_path), "context": "Test"}},
+        "registries": {"reg-01": {"pool_home": str(tmp_path), "context": "Test"}},
     })
     init_pool(
         registry_id="reg-01",
@@ -472,8 +472,8 @@ def test_load_config_accumulates_registries_from_global_and_cwd(tmp_path: Path) 
     config = load_config(global_config_dir=global_dir, cwd=cwd)
     assert "household" in config.registries
     assert "work" in config.registries
-    assert config.registries["household"].home == "/registries/household"
-    assert config.registries["work"].home == "/registries/work"
+    assert config.registries["household"].pool_home == "/registries/household"
+    assert config.registries["work"].pool_home == "/registries/work"
 
 
 def test_load_config_cwd_registry_entry_overrides_global_for_same_id(tmp_path: Path) -> None:
@@ -487,7 +487,7 @@ def test_load_config_cwd_registry_entry_overrides_global_for_same_id(tmp_path: P
         "registries": {"household": "/local/household"},
     })
     config = load_config(global_config_dir=global_dir, cwd=cwd)
-    assert config.registries["household"].home == "/local/household"
+    assert config.registries["household"].pool_home == "/local/household"
 
 
 def test_load_config_picks_up_registry_from_local_config_in_cwd_walk(tmp_path: Path) -> None:
@@ -495,13 +495,13 @@ def test_load_config_picks_up_registry_from_local_config_in_cwd_walk(tmp_path: P
     global_dir = tmp_path / "global"
     project = tmp_path / "project"
     project.mkdir()
-    # A local config written with the new dict format (home key explicit).
+    # A local config written with the new dict format (pool_home key explicit).
     _write_config(project / "config.yaml", {
-        "registries": {"reg-01": {"home": str(tmp_path / "reg-home"), "context": "Test"}},
+        "registries": {"reg-01": {"pool_home": str(tmp_path / "reg-home"), "context": "Test"}},
     })
     config = load_config(global_config_dir=global_dir, cwd=project)
     assert "reg-01" in config.registries
-    assert config.registries["reg-01"].home == str(tmp_path / "reg-home")
+    assert config.registries["reg-01"].pool_home == str(tmp_path / "reg-home")
     assert config.registries["reg-01"].context == "Test"
 
 
@@ -511,7 +511,7 @@ def test_resolve_default_pool_returns_path_when_configured(tmp_path: Path) -> No
     config = AlphConfig(
         default_registry="household",
         default_pool="vehicles",
-        registries={"household": RegistryEntry(home=str(registry_path))},
+        registries={"household": RegistryEntry(pool_home=str(registry_path))},
     )
     assert resolve_default_pool(config) == registry_path / "vehicles"
 
@@ -532,7 +532,7 @@ def test_resolve_default_pool_returns_none_when_no_default_pool(tmp_path: Path) 
     """resolve_default_pool returns None when default_pool is not set."""
     config = AlphConfig(
         default_registry="household",
-        registries={"household": RegistryEntry(home="/registries/household")},
+        registries={"household": RegistryEntry(pool_home="/registries/household")},
     )
     assert resolve_default_pool(config) is None
 
@@ -544,7 +544,7 @@ def test_resolve_pool_name_finds_pool_in_default_registry(tmp_path: Path) -> Non
         default_registry="household",
         registries={
             "household": RegistryEntry(
-                home=str(reg_home),
+                pool_home=str(reg_home),
                 pools={"vehicles": {"context": "Cars", "type": "subdir"}},
             )
         },
@@ -558,7 +558,7 @@ def test_resolve_pool_name_returns_none_when_not_found(tmp_path: Path) -> None:
     config = AlphConfig(
         default_registry="household",
         registries={
-            "household": RegistryEntry(home=str(reg_home), pools={"vehicles": {"context": "Cars"}}),
+            "household": RegistryEntry(pool_home=str(reg_home), pools={"vehicles": {"context": "Cars"}}),
         },
     )
     assert resolve_pool_name("appliances", config) is None
@@ -571,8 +571,8 @@ def test_resolve_pool_name_checks_default_registry_first(tmp_path: Path) -> None
     config = AlphConfig(
         default_registry="reg-b",
         registries={
-            "reg-a": RegistryEntry(home=str(reg_a), pools={"tools": {"context": "A tools"}}),
-            "reg-b": RegistryEntry(home=str(reg_b), pools={"tools": {"context": "B tools"}}),
+            "reg-a": RegistryEntry(pool_home=str(reg_a), pools={"tools": {"context": "A tools"}}),
+            "reg-b": RegistryEntry(pool_home=str(reg_b), pools={"tools": {"context": "B tools"}}),
         },
     )
     assert resolve_pool_name("tools", config) == reg_b / "tools"
@@ -581,7 +581,7 @@ def test_resolve_pool_name_checks_default_registry_first(tmp_path: Path) -> None
 def test_init_pool_stores_type_not_layout(tmp_path: Path) -> None:
     """init_pool stores 'type' (not 'layout') and omits 'path' in pool metadata."""
     global_dir = tmp_path / "global"
-    init_registry(home=tmp_path, registry_id="reg-01", context="Test", global_config_dir=global_dir)
+    init_registry(pool_home=tmp_path, registry_id="reg-01", context="Test", global_config_dir=global_dir)
     init_pool(
         registry_id="reg-01",
         name="vehicles",

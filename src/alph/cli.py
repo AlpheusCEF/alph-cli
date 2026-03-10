@@ -117,16 +117,16 @@ def _require_creator(creator_flag: str | None, cfg: AlphConfig) -> str:
 
 @registry_app.command("init")
 def registry_init(
-    home: Path = typer.Option(..., "--home", help="Directory where pool subdirectories will be created. The registry definition is written into the global config, not here."),
+    pool_home: Path = typer.Option(..., "--pool-home", help="Directory where pool subdirectories will be created. The registry definition is written into the global config, not here."),
     registry_id: str = typer.Option(..., "--id", help="Machine identifier for the registry."),
     context: str = typer.Option(..., "--context", "-c", help="Human/LLM-readable description."),
     name: str = typer.Option("", "--name", help="Optional human-readable name."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
-    """Create a registry home directory and register it in the global config.
+    """Create a registry pool_home directory and register it in the global config.
 
     The registry definition (id, context, name) is written into the global
-    config (~/.config/alph/config.yaml). The --home directory is created but
+    config (~/.config/alph/config.yaml). The --pool-home directory is created but
     receives no config file — it is just the directory where pool subdirectories
     will live.
 
@@ -136,7 +136,7 @@ def registry_init(
     """
     _apply_verbose(verbose)
     result = init_registry(
-        home=home,
+        pool_home=pool_home,
         registry_id=registry_id,
         context=context,
         name=name,
@@ -147,7 +147,7 @@ def registry_init(
             console.print(f"[red]error:[/red] {error}")
         raise typer.Exit(code=1)
     console.print(f"[green]registry created:[/green] {registry_id}")
-    console.print(f"  home:   {home}")
+    console.print(f"  pool home: {pool_home}")
     console.print(f"  config: {result.config_path}")
     if result.set_as_default:
         console.print("  [dim]set as default registry[/dim]")
@@ -173,7 +173,7 @@ def registry_list(
     table.add_column("ID", style="dim", width=20)
     table.add_column("name", width=20)
     table.add_column("context")
-    table.add_column("home")
+    table.add_column("pool home")
     for s in summaries:
         table.add_row(s.registry_id, s.name, s.context, str(s.home_path))
     console.print(table)
@@ -520,7 +520,7 @@ def cmd_defaults(
     if cfg.default_registry and cfg.default_registry in cfg.registries:
         entry = cfg.registries[cfg.default_registry]
         pool_path = (
-            str(Path(entry.home) / cfg.default_pool) if cfg.default_pool else "[dim]not set[/dim]"
+            str(Path(entry.pool_home) / cfg.default_pool) if cfg.default_pool else "[dim]not set[/dim]"
         )
         console.print(f"  resolved pool:    {pool_path}")
 

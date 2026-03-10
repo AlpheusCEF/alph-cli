@@ -14,7 +14,7 @@ runner = CliRunner()
 def _init_registry_and_pool(base: Path) -> Path:
     """Create a minimal registry + pool using the CLI, return pool path."""
     registry_dir = base / "registry"
-    runner.invoke(app, ["registry", "init", "--home", str(registry_dir),
+    runner.invoke(app, ["registry", "init", "--pool-home", str(registry_dir),
                         "--id", "reg-01", "--context", "Test registry"])
     runner.invoke(app, ["pool", "init", "--registry", "reg-01",
                         "--name", "test-pool", "--context", "Test pool",
@@ -28,7 +28,7 @@ def test_registry_init_creates_home_directory_and_global_entry(tmp_path: Path, m
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     result = runner.invoke(app, [
         "registry", "init",
-        "--home", str(tmp_path / "registry"),
+        "--pool-home", str(tmp_path / "registry"),
         "--id", "reg-01",
         "--context", "Personal context pools",
     ])
@@ -45,7 +45,7 @@ def test_registry_init_creates_home_directory_and_global_entry(tmp_path: Path, m
 def test_pool_init_creates_pool_structure(tmp_path: Path) -> None:
     """alph pool init creates snapshots/, pointers/, and .alph/ directories."""
     reg_dir = tmp_path / "reg"
-    runner.invoke(app, ["registry", "init", "--home", str(reg_dir),
+    runner.invoke(app, ["registry", "init", "--pool-home", str(reg_dir),
                         "--id", "r1", "--context", "Test"])
     result = runner.invoke(app, [
         "pool", "init",
@@ -66,7 +66,7 @@ def test_pool_list_shows_registered_pools(tmp_path: Path, monkeypatch) -> None: 
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     reg_dir = tmp_path / "reg"
     runner.invoke(app, [
-        "registry", "init", "--home", str(reg_dir), "--id", "home", "--context", "Home",
+        "registry", "init", "--pool-home", str(reg_dir), "--id", "home", "--context", "Home",
     ])
     runner.invoke(app, [
         "pool", "init", "--registry", "home", "--name", "vehicles",
@@ -108,7 +108,7 @@ def test_registry_init_output_mentions_home_and_config(tmp_path: Path, monkeypat
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     result = runner.invoke(app, [
         "registry", "init",
-        "--home", str(tmp_path / "reg"),
+        "--pool-home", str(tmp_path / "reg"),
         "--id", "my-reg",
         "--context", "Test",
         "--name", "My Registry",
@@ -116,7 +116,7 @@ def test_registry_init_output_mentions_home_and_config(tmp_path: Path, monkeypat
     assert result.exit_code == 0
     assert "my-reg" in result.output
     # Output should mention both the home directory and the config file location.
-    assert "home" in result.output or str(tmp_path / "reg") in result.output
+    assert "pool home" in result.output or str(tmp_path / "reg") in result.output
     assert "config.yaml" in result.output
 
 
@@ -126,7 +126,7 @@ def test_registry_init_reports_set_as_default(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     result = runner.invoke(app, [
         "registry", "init",
-        "--home", str(tmp_path / "reg"),
+        "--pool-home", str(tmp_path / "reg"),
         "--id", "my-reg",
         "--context", "Test",
     ])
@@ -330,7 +330,7 @@ def test_registry_list_shows_registry_id_and_context(tmp_path: Path, monkeypatch
     registry_dir = tmp_path / "my-registry"
     runner.invoke(app, [
         "registry", "init",
-        "--home", str(registry_dir),
+        "--pool-home", str(registry_dir),
         "--id", "personal",
         "--context", "Personal context pools",
         "--name", "Personal",
@@ -354,7 +354,7 @@ def test_pool_init_shows_known_registries_on_unknown_registry_error(tmp_path: Pa
     registry_dir = tmp_path / "reg"
     runner.invoke(app, [
         "registry", "init",
-        "--home", str(registry_dir),
+        "--pool-home", str(registry_dir),
         "--id", "existing-reg",
         "--context", "Existing registry",
     ])
@@ -445,7 +445,7 @@ def test_defaults_shows_configured_values(tmp_path: Path, monkeypatch) -> None: 
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     reg_dir = tmp_path / "reg"
     runner.invoke(app, [
-        "registry", "init", "--home", str(reg_dir), "--id", "home", "--context", "Home",
+        "registry", "init", "--pool-home", str(reg_dir), "--id", "home", "--context", "Home",
     ])
     runner.invoke(app, [
         "pool", "init", "--registry", "home", "--name", "vehicles",

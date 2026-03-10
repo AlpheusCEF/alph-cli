@@ -15,7 +15,7 @@ def _setup_pool(base: Path) -> Path:
     """Create a registry + pool and return the pool path."""
     registry_path = base / "registry"
     global_dir = base / "global"
-    init_registry(home=registry_path, registry_id="test", context="Test registry",
+    init_registry(pool_home=registry_path, registry_id="test", context="Test registry",
                   global_config_dir=global_dir)
     result = init_pool(
         registry_id="test",

@@ -30,11 +30,11 @@ class RegistryEntry:
     """A registry definition as stored in the config.
 
     All metadata (context, name, pools) lives here — there is no separate
-    per-registry config.yaml. The ``home`` directory is just a directory
-    where pool subdirectories are created.
+    per-registry config.yaml. The ``pool_home`` directory is where pool
+    subdirectories are created.
     """
 
-    home: str
+    pool_home: str
     context: str = ""
     name: str = ""
     pools: dict[str, object] = field(default_factory=dict)
@@ -365,19 +365,20 @@ def load_config(
         if not isinstance(data, dict):
             return
         # Accumulate registries into RegistryEntry objects.
-        # - String value: home path only (no metadata).
-        # - Dict with "home" key: full entry written by init_registry.
-        # - Dict without "home" key: legacy home-config format; use config_path.parent as home.
+        # - String value: pool_home path only (no metadata).
+        # - Dict with "pool_home" key: full entry written by init_registry.
+        # - Dict with legacy "home" key: backwards compat — treat as pool_home.
+        # - Dict without either key: legacy home-config format; use config_path.parent as pool_home.
         regs = data.get("registries", {})
         if isinstance(regs, dict):
             for k, v in regs.items():
                 if isinstance(v, str):
-                    accumulated_registries[str(k)] = RegistryEntry(home=v)
+                    accumulated_registries[str(k)] = RegistryEntry(pool_home=v)
                 elif isinstance(v, dict):
-                    home_val = str(v["home"]) if "home" in v else str(config_path.parent)
+                    home_val = str(v.get("pool_home") or v.get("home") or config_path.parent)
                     pools_raw = v.get("pools", {})
                     accumulated_registries[str(k)] = RegistryEntry(
-                        home=home_val,
+                        pool_home=home_val,
                         context=str(v.get("context", "")),
                         name=str(v.get("name", "")),
                         pools=dict(pools_raw) if isinstance(pools_raw, dict) else {},
@@ -482,7 +483,7 @@ def find_registry_config(
     # Fast path: lookup by ID.
     if registry_id_or_name in cfg.registries:
         entry = cfg.registries[registry_id_or_name]
-        home = Path(entry.home)
+        home = Path(entry.pool_home)
         logger.debug("registry found by ID: %r -> %s", registry_id_or_name, home)
         return (registry_id_or_name, home)
 
@@ -490,8 +491,8 @@ def find_registry_config(
     logger.debug("registry %r not found by ID, trying name lookup", registry_id_or_name)
     for reg_id, entry in cfg.registries.items():
         if entry.name == registry_id_or_name:
-            logger.debug("registry found by name: %r -> %s", registry_id_or_name, entry.home)
-            return (reg_id, Path(entry.home))
+            logger.debug("registry found by name: %r -> %s", registry_id_or_name, entry.pool_home)
+            return (reg_id, Path(entry.pool_home))
 
     return None
 
@@ -516,7 +517,7 @@ def collect_registries(
             registry_id=reg_id,
             name=entry.name,
             context=entry.context,
-            home_path=Path(entry.home),
+            home_path=Path(entry.pool_home),
         )
         for reg_id, entry in cfg.registries.items()
     ]
@@ -636,7 +637,7 @@ def resolve_default_pool(config: AlphConfig) -> Path | None:
     entry = config.registries.get(config.default_registry)
     if entry is None:
         return None
-    return Path(entry.home) / config.default_pool
+    return Path(entry.pool_home) / config.default_pool
 
 
 def resolve_pool_name(name: str, cfg: AlphConfig) -> Path | None:
@@ -659,7 +660,7 @@ def resolve_pool_name(name: str, cfg: AlphConfig) -> Path | None:
 
     for _reg_id, entry in registries_ordered:
         if isinstance(entry.pools, dict) and name in entry.pools:
-            return Path(entry.home) / name
+            return Path(entry.pool_home) / name
     return None
 
 
@@ -670,21 +671,21 @@ def resolve_pool_name(name: str, cfg: AlphConfig) -> Path | None:
 
 def init_registry(
     *,
-    home: Path,
+    pool_home: Path,
     registry_id: str,
     context: str,
     name: str = "",
     global_config_dir: Path,
 ) -> RegistryResult:
-    """Create a registry home directory and register it in the global config.
+    """Create a registry pool_home directory and register it in the global config.
 
     The registry definition (context, name, pools) is written into the global
     config's ``registries`` map as a dict entry — no separate ``config.yaml``
-    is created inside ``home``. The ``home`` directory is just where pool
+    is created inside ``pool_home``. The ``pool_home`` directory is where pool
     subdirectories will be created.
 
     Args:
-        home: Directory to create as the registry root.
+        pool_home: Directory to create as the registry root.
         registry_id: Machine identifier for the registry.
         context: Human/LLM-readable description.
         name: Optional human-readable name.
@@ -695,7 +696,7 @@ def init_registry(
         RegistryResult with config_path pointing to the global config,
         validation outcome, and set_as_default.
     """
-    home.mkdir(parents=True, exist_ok=True)
+    pool_home.mkdir(parents=True, exist_ok=True)
     global_config_dir.mkdir(parents=True, exist_ok=True)
     global_config_path = global_config_dir / "config.yaml"
 
@@ -709,8 +710,8 @@ def init_registry(
     if not isinstance(global_registries, dict):
         global_registries = {}
 
-    # Write rich dict entry: home path + metadata.
-    registry_entry: dict[str, object] = {"home": str(home), "context": context}
+    # Write rich dict entry: pool_home path + metadata.
+    registry_entry: dict[str, object] = {"pool_home": str(pool_home), "context": context}
     if name:
         registry_entry["name"] = name
     global_registries[registry_id] = registry_entry
@@ -775,7 +776,7 @@ def init_pool(
     if found is None:
         if bootstrap:
             init_registry(
-                home=cwd,
+                pool_home=cwd,
                 registry_id=registry_id,
                 context=registry_context or f"Registry {registry_id}",
                 global_config_dir=global_config_dir,
@@ -814,7 +815,7 @@ def init_pool(
 
     reg_entry = global_registries.get(actual_reg_id, {})
     if isinstance(reg_entry, str):
-        reg_entry = {"home": reg_entry}
+        reg_entry = {"pool_home": reg_entry}
     if not isinstance(reg_entry, dict):
         reg_entry = {}
 
