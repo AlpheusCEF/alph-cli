@@ -10,6 +10,7 @@ import pytest
 from alph.remote import (
     FileEntry,
     GitHubProvider,
+    _resolve_ssh_hostname,
     clone_remote_registry,
     default_clone_dir,
     detect_forge,
@@ -57,6 +58,136 @@ def test_detect_forge_unknown_host() -> None:
 def test_detect_forge_github_enterprise() -> None:
     """Non-github.com host is not detected as github."""
     assert detect_forge("git@github.enterprise.corp:org/repo.git") == "git"
+
+
+# ---------------------------------------------------------------------------
+# SSH host alias resolution
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_ssh_hostname_returns_hostname_for_alias(tmp_path: Path) -> None:
+    """_resolve_ssh_hostname returns the HostName for a matching Host alias."""
+    ssh_config = tmp_path / "ssh_config"
+    ssh_config.write_text(
+        "Host github-personal\n"
+        "    HostName github.com\n"
+        "    User git\n"
+        "    IdentityFile ~/.ssh/my_key\n"
+    )
+    assert _resolve_ssh_hostname("github-personal", ssh_config_path=ssh_config) == "github.com"
+
+
+def test_resolve_ssh_hostname_returns_none_for_unknown(tmp_path: Path) -> None:
+    """_resolve_ssh_hostname returns None when alias is not in config."""
+    ssh_config = tmp_path / "ssh_config"
+    ssh_config.write_text(
+        "Host github-personal\n"
+        "    HostName github.com\n"
+    )
+    assert _resolve_ssh_hostname("unknown-host", ssh_config_path=ssh_config) is None
+
+
+def test_resolve_ssh_hostname_returns_none_when_no_ssh_config(tmp_path: Path) -> None:
+    """_resolve_ssh_hostname returns None when ssh config does not exist."""
+    assert _resolve_ssh_hostname("anything", ssh_config_path=tmp_path / "nonexistent") is None
+
+
+def test_resolve_ssh_hostname_handles_multiple_hosts(tmp_path: Path) -> None:
+    """_resolve_ssh_hostname picks the correct host from multiple entries."""
+    ssh_config = tmp_path / "ssh_config"
+    ssh_config.write_text(
+        "Host work-github\n"
+        "    HostName github.enterprise.corp\n"
+        "    User git\n"
+        "\n"
+        "Host personal-github\n"
+        "    HostName github.com\n"
+        "    User git\n"
+        "\n"
+        "Host gitlab-work\n"
+        "    HostName gitlab.com\n"
+        "    User git\n"
+    )
+    assert _resolve_ssh_hostname("work-github", ssh_config_path=ssh_config) == "github.enterprise.corp"
+    assert _resolve_ssh_hostname("personal-github", ssh_config_path=ssh_config) == "github.com"
+    assert _resolve_ssh_hostname("gitlab-work", ssh_config_path=ssh_config) == "gitlab.com"
+
+
+def test_resolve_ssh_hostname_ignores_wildcard_hosts(tmp_path: Path) -> None:
+    """_resolve_ssh_hostname does not match wildcard Host entries."""
+    ssh_config = tmp_path / "ssh_config"
+    ssh_config.write_text(
+        "Host *\n"
+        "    HostName default.example.com\n"
+        "\n"
+        "Host github-personal\n"
+        "    HostName github.com\n"
+    )
+    assert _resolve_ssh_hostname("github-personal", ssh_config_path=ssh_config) == "github.com"
+    assert _resolve_ssh_hostname("random-host", ssh_config_path=ssh_config) is None
+
+
+def test_resolve_ssh_hostname_case_insensitive_keyword(tmp_path: Path) -> None:
+    """SSH config keywords are case-insensitive per spec."""
+    ssh_config = tmp_path / "ssh_config"
+    ssh_config.write_text(
+        "host github-personal\n"
+        "    hostname github.com\n"
+    )
+    assert _resolve_ssh_hostname("github-personal", ssh_config_path=ssh_config) == "github.com"
+
+
+def test_detect_forge_resolves_ssh_alias(tmp_path: Path) -> None:
+    """detect_forge resolves SSH host aliases to detect the forge."""
+    ssh_config = tmp_path / "ssh_config"
+    ssh_config.write_text(
+        "Host github-personal\n"
+        "    HostName github.com\n"
+    )
+    assert detect_forge("git@github-personal:org/repo.git", ssh_config_path=ssh_config) == "github"
+
+
+def test_detect_forge_resolves_gitlab_alias(tmp_path: Path) -> None:
+    """detect_forge resolves SSH alias pointing to gitlab.com."""
+    ssh_config = tmp_path / "ssh_config"
+    ssh_config.write_text(
+        "Host my-gitlab\n"
+        "    HostName gitlab.com\n"
+    )
+    assert detect_forge("git@my-gitlab:org/repo.git", ssh_config_path=ssh_config) == "gitlab"
+
+
+def test_provider_for_url_resolves_ssh_alias(tmp_path: Path) -> None:
+    """provider_for_url creates GitHubProvider for an SSH alias pointing to github.com."""
+    ssh_config = tmp_path / "ssh_config"
+    ssh_config.write_text(
+        "Host gh-personal\n"
+        "    HostName github.com\n"
+    )
+    provider = provider_for_url(
+        "git@gh-personal:AlpheusCEF/repo.git",
+        token="test-token",
+        ssh_config_path=ssh_config,
+    )
+    assert isinstance(provider, GitHubProvider)
+    assert provider.owner == "AlpheusCEF"
+    assert provider.repo == "repo"
+
+
+def test_github_provider_parses_ssh_alias_url(tmp_path: Path) -> None:
+    """GitHubProvider extracts owner/repo from SSH alias URL."""
+    ssh_config = tmp_path / "ssh_config"
+    ssh_config.write_text(
+        "Host gh-personal\n"
+        "    HostName github.com\n"
+    )
+    p = GitHubProvider(
+        "git@gh-personal:AlpheusCEF/multi-pool-repo-example.git",
+        token="t",
+        ssh_config_path=ssh_config,
+    )
+    assert p.owner == "AlpheusCEF"
+    assert p.repo == "multi-pool-repo-example"
 
 
 # ---------------------------------------------------------------------------

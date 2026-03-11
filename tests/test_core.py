@@ -1693,3 +1693,93 @@ def test_init_pool_rejects_reserved_name(tmp_path: Path) -> None:
     )
     assert not result.valid
     assert any("reserved" in e for e in result.errors)
+
+
+def test_init_pool_preserves_config_key_order(tmp_path: Path) -> None:
+    """init_pool does not reorder existing config keys when writing."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "reg"
+    init_registry(
+        pool_home=reg_home,
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    # Write config with a specific key order.
+    config_path = global_dir / "config.yaml"
+    config_path.write_text(
+        "creator: me@example.com\n"
+        "default_registry: test-reg\n"
+        "registries:\n"
+        "  test-reg:\n"
+        "    pool_home: " + str(reg_home) + "\n"
+        "    context: Test.\n"
+    )
+    init_pool(
+        registry_id="test-reg",
+        name="alpha",
+        context="First pool.",
+        cwd=reg_home,
+        global_config_dir=global_dir,
+    )
+    text = config_path.read_text()
+    lines = text.strip().splitlines()
+    # creator should still come before default_registry, and registries last.
+    creator_idx = next(i for i, line in enumerate(lines) if line.startswith("creator:"))
+    default_idx = next(i for i, line in enumerate(lines) if line.startswith("default_"))
+    reg_idx = next(i for i, line in enumerate(lines) if line.startswith("registries:"))
+    assert creator_idx < default_idx < reg_idx
+
+
+def test_init_pool_rejects_duplicate_name_in_config(tmp_path: Path) -> None:
+    """init_pool errors when a pool with the same name already exists in config."""
+    global_dir = tmp_path / "global"
+    init_registry(
+        pool_home=tmp_path / "reg",
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    first = init_pool(
+        registry_id="test-reg",
+        name="vehicles",
+        context="First pool.",
+        cwd=tmp_path / "reg",
+        global_config_dir=global_dir,
+    )
+    assert first.valid
+
+    second = init_pool(
+        registry_id="test-reg",
+        name="vehicles",
+        context="Duplicate pool.",
+        cwd=tmp_path / "reg",
+        global_config_dir=global_dir,
+    )
+    assert not second.valid
+    assert any("already exists" in e for e in second.errors)
+
+
+def test_init_pool_rejects_duplicate_directory_on_disk(tmp_path: Path) -> None:
+    """init_pool errors when pool directory exists on disk even if not in config."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "reg"
+    init_registry(
+        pool_home=reg_home,
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    # Create pool directory manually (not via init_pool).
+    (reg_home / "sneaky" / "snapshots").mkdir(parents=True)
+    (reg_home / "sneaky" / "live").mkdir(parents=True)
+
+    result = init_pool(
+        registry_id="test-reg",
+        name="sneaky",
+        context="Should detect existing dir.",
+        cwd=reg_home,
+        global_config_dir=global_dir,
+    )
+    assert not result.valid
+    assert any("already exists" in e for e in result.errors)

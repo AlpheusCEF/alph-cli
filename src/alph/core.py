@@ -888,7 +888,7 @@ def init_registry(
         set_as_default = True
 
     global_config_path.write_text(
-        yaml.dump(global_data, default_flow_style=False, allow_unicode=True)
+        yaml.dump(global_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
     )
 
     logger.debug("init_registry: wrote %s to %s", registry_id, global_config_path)
@@ -970,6 +970,39 @@ def init_pool(
     actual_reg_id, registry_home = found
 
     pool_path = registry_home / name
+
+    # Check for duplicate: pool already in config.
+    global_config_path = global_config_dir / "config.yaml"
+    if global_config_path.exists():
+        existing_data = yaml.safe_load(global_config_path.read_text()) or {}
+        if isinstance(existing_data, dict):
+            existing_regs = existing_data.get("registries", {})
+            if isinstance(existing_regs, dict):
+                reg_entry_raw = existing_regs.get(actual_reg_id, {})
+                if isinstance(reg_entry_raw, dict):
+                    existing_pools = reg_entry_raw.get("pools", {})
+                    if isinstance(existing_pools, dict) and name in existing_pools:
+                        return PoolResult(
+                            pool_path=pool_path,
+                            valid=False,
+                            errors=[
+                                f"pool '{name}' already exists in registry "
+                                f"'{actual_reg_id}'",
+                            ],
+                            config_path=global_config_path,
+                        )
+
+    # Check for duplicate: pool directory already on disk.
+    if pool_path.is_dir() and any(pool_path.iterdir()):
+        return PoolResult(
+            pool_path=pool_path,
+            valid=False,
+            errors=[
+                f"pool directory already exists: {pool_path}",
+            ],
+            config_path=global_config_dir / "config.yaml",
+        )
+
     for subdir in ("snapshots", "live"):
         (pool_path / subdir).mkdir(parents=True, exist_ok=True)
 
@@ -1005,7 +1038,7 @@ def init_pool(
         global_data["default_pool"] = name
 
     global_config_path.write_text(
-        yaml.dump(global_data, default_flow_style=False, allow_unicode=True)
+        yaml.dump(global_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
     )
     logger.debug("init_pool: added pool %r to registry %r in %s", name, actual_reg_id, global_config_path)
 

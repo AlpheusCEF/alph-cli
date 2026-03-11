@@ -56,29 +56,93 @@ class RemoteProvider(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# SSH host alias resolution
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SSH_CONFIG = Path.home() / ".ssh" / "config"
+
+
+def _resolve_ssh_hostname(
+    alias: str,
+    *,
+    ssh_config_path: Path | None = None,
+) -> str | None:
+    """Resolve an SSH host alias to its HostName via ~/.ssh/config.
+
+    Parses the SSH config file looking for a ``Host`` entry matching
+    *alias* (exact, non-wildcard) and returns its ``HostName`` value.
+    Returns ``None`` if the alias is not found or the config file
+    does not exist.
+    """
+    config_path = ssh_config_path or _DEFAULT_SSH_CONFIG
+    if not config_path.is_file():
+        return None
+
+    try:
+        text = config_path.read_text()
+    except OSError:
+        return None
+
+    current_host: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        parts = stripped.split(None, 1)
+        if len(parts) != 2:
+            continue
+
+        keyword, value = parts[0].lower(), parts[1]
+
+        if keyword == "host":
+            # Skip wildcard entries; only match exact alias.
+            current_host = None if "*" in value or "?" in value else value.strip()
+        elif keyword == "hostname" and current_host == alias:
+            return value.strip().lower()
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Forge detection
 # ---------------------------------------------------------------------------
 
 
-def detect_forge(remote_url: str) -> str:
+def _extract_host(remote_url: str) -> str:
+    """Extract the host portion from a git remote URL."""
+    if remote_url.startswith("git@"):
+        match = re.match(r"git@([^:]+):", remote_url)
+        if match:
+            return match.group(1)
+    elif "://" in remote_url:
+        match = re.match(r"[a-z+]+://(?:[^@]+@)?([^/]+)", remote_url)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def detect_forge(
+    remote_url: str,
+    *,
+    ssh_config_path: Path | None = None,
+) -> str:
     """Detect the git forge from a remote URL.
+
+    Resolves SSH host aliases via ``~/.ssh/config`` so that
+    ``git@github-personal:org/repo.git`` is correctly identified
+    when ``github-personal`` maps to ``github.com``.
 
     Returns one of: "github", "gitlab", "bitbucket", "git" (fallback).
     """
-    # Normalize: extract the host from SSH or HTTPS URLs.
-    host = ""
-    if remote_url.startswith("git@"):
-        # git@host:org/repo.git
-        match = re.match(r"git@([^:]+):", remote_url)
-        if match:
-            host = match.group(1)
-    elif "://" in remote_url:
-        # https://host/... or ssh://git@host/...
-        match = re.match(r"[a-z+]+://(?:[^@]+@)?([^/]+)", remote_url)
-        if match:
-            host = match.group(1)
+    host = _extract_host(remote_url).lower()
 
-    host = host.lower()
+    # If the host isn't a known forge, check if it's an SSH alias.
+    if host and host not in ("github.com", "gitlab.com", "bitbucket.org"):
+        resolved = _resolve_ssh_hostname(host, ssh_config_path=ssh_config_path)
+        if resolved:
+            host = resolved
+
     if host == "github.com":
         return "github"
     if host == "gitlab.com":
@@ -120,12 +184,29 @@ def _resolve_github_token() -> str:
     )
 
 
-def _parse_github_owner_repo(remote_url: str) -> tuple[str, str]:
-    """Extract (owner, repo) from a GitHub remote URL."""
-    # SSH: git@github.com:Owner/Repo.git
-    match = re.match(r"git@github\.com:([^/]+)/(.+?)(?:\.git)?$", remote_url)
-    if match:
-        return match.group(1), match.group(2)
+def _parse_github_owner_repo(
+    remote_url: str,
+    *,
+    ssh_config_path: Path | None = None,
+) -> tuple[str, str]:
+    """Extract (owner, repo) from a GitHub remote URL.
+
+    Supports SSH host aliases: if the host in a ``git@<alias>:`` URL
+    resolves to ``github.com`` via ``~/.ssh/config``, it is accepted.
+    """
+    # SSH: git@<host>:Owner/Repo.git
+    ssh_match = re.match(r"git@([^:]+):([^/]+)/(.+?)(?:\.git)?$", remote_url)
+    if ssh_match:
+        host = ssh_match.group(1).lower()
+        if host != "github.com":
+            resolved = _resolve_ssh_hostname(
+                host, ssh_config_path=ssh_config_path,
+            )
+            if resolved != "github.com":
+                raise ValueError(
+                    f"Cannot parse GitHub owner/repo from URL: {remote_url!r}"
+                )
+        return ssh_match.group(2), ssh_match.group(3)
 
     # HTTPS: https://github.com/Owner/Repo.git
     match = re.match(r"https?://github\.com/([^/]+)/(.+?)(?:\.git)?$", remote_url)
@@ -138,9 +219,17 @@ def _parse_github_owner_repo(remote_url: str) -> tuple[str, str]:
 class GitHubProvider:
     """Read-only access to a GitHub repository via the GraphQL API."""
 
-    def __init__(self, remote_url: str, *, token: str | None = None) -> None:
+    def __init__(
+        self,
+        remote_url: str,
+        *,
+        token: str | None = None,
+        ssh_config_path: Path | None = None,
+    ) -> None:
         self.remote_url = remote_url
-        self.owner, self.repo = _parse_github_owner_repo(remote_url)
+        self.owner, self.repo = _parse_github_owner_repo(
+            remote_url, ssh_config_path=ssh_config_path,
+        )
         self.token = token or _resolve_github_token()
 
     def _graphql(
@@ -252,12 +341,22 @@ class GitHubProvider:
 # ---------------------------------------------------------------------------
 
 
-def provider_for_url(remote_url: str, *, token: str | None = None) -> RemoteProvider:
+def provider_for_url(
+    remote_url: str,
+    *,
+    token: str | None = None,
+    ssh_config_path: Path | None = None,
+) -> RemoteProvider:
     """Create the appropriate provider for a remote URL.
+
+    Resolves SSH host aliases via ``~/.ssh/config`` so that URLs like
+    ``git@github-personal:org/repo.git`` work when the alias maps to
+    ``github.com``.
 
     Args:
         remote_url: Git remote URL (e.g. git@github.com:org/repo.git).
         token: Optional auth token. If omitted, resolved from environment.
+        ssh_config_path: Override path to SSH config (for testing).
 
     Returns:
         A RemoteProvider instance.
@@ -265,9 +364,11 @@ def provider_for_url(remote_url: str, *, token: str | None = None) -> RemoteProv
     Raises:
         NotImplementedError: For forges not yet supported.
     """
-    forge = detect_forge(remote_url)
+    forge = detect_forge(remote_url, ssh_config_path=ssh_config_path)
     if forge == "github":
-        return GitHubProvider(remote_url, token=token)
+        return GitHubProvider(
+            remote_url, token=token, ssh_config_path=ssh_config_path,
+        )
     raise NotImplementedError(
         f"Remote read for {forge} forge is not yet supported. "
         f"URL: {remote_url}"
