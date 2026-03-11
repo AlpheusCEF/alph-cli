@@ -49,7 +49,7 @@ _help_settings = {"help_option_names": ["-h", "--help"]}
 app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.", context_settings=_help_settings)
 registry_app = typer.Typer(help="Registry commands.", invoke_without_command=True, context_settings=_help_settings)
 pool_app = typer.Typer(help="Pool commands.", invoke_without_command=True, context_settings=_help_settings)
-config_app = typer.Typer(help="Config file commands.", context_settings=_help_settings)
+config_app = typer.Typer(help="Config file commands.", invoke_without_command=True, context_settings=_help_settings)
 app.add_typer(registry_app, name="registry")
 app.add_typer(registry_app, name="reg", hidden=True)
 app.add_typer(pool_app, name="pool")
@@ -1137,6 +1137,13 @@ def cmd_validate(
             f"[green]{node_count} node{'s' if node_count != 1 else ''}"
             f" in pool {pool_name} valid.[/green]"
         )
+
+
+@config_app.callback()
+def _config_default(ctx: typer.Context) -> None:
+    """Config file commands. Defaults to 'list' when no subcommand is given."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(config_list, cwd=None, verbose=False)
 
 
 @config_app.command("list")
