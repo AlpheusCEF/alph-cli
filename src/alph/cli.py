@@ -66,6 +66,7 @@ console = Console(width=_console_width())
 
 _verbose: bool = False
 _registry_override: str | None = None
+_branch_override: str | None = None
 
 _VERBOSE_OPT = typer.Option(False, "--verbose", "-v", help="Enable debug logging.")
 
@@ -95,10 +96,16 @@ def _main(
         help="Override registry: ID, name, or remote git URL. "
              "Scopes pool resolution to this registry for this invocation.",
     ),
+    branch: str | None = typer.Option(
+        None, "--branch",
+        help="Override git branch for remote operations. "
+             "Useful with ad-hoc --registry URLs that have no config entry.",
+    ),
 ) -> None:
     """Alpheus Context Engine Framework."""
-    global _registry_override
+    global _registry_override, _branch_override
     _registry_override = registry
+    _branch_override = branch
     if not logging.root.handlers:
         logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     _apply_verbose(verbose)
@@ -300,7 +307,7 @@ def _pool_context(
             Path(entry.clone_path) if entry and entry.clone_path
             else default_clone_dir(ref.remote_url)
         )
-        rw_branch = entry.branch if entry and entry.branch else ""
+        rw_branch = _branch_override or (entry.branch if entry and entry.branch else "")
         clone_remote_registry(ref.remote_url, clone_dir, branch=rw_branch)
         if entry and entry.auto_pull and (clone_dir / ".git").is_dir():
             try:
@@ -312,7 +319,7 @@ def _pool_context(
         return
 
     # RO path — fetch via provider API.
-    branch = entry.branch if entry and entry.branch else "HEAD"
+    branch = _branch_override or (entry.branch if entry and entry.branch else "HEAD")
     provider = provider_for_url(ref.remote_url)
     with resolve_pool_readonly(provider, ref.subpath, ref=branch) as pool_path:
         yield pool_path

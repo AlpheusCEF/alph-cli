@@ -376,8 +376,10 @@ def _checkout_branch(clone_dir: Path, branch: str) -> None:
         return
 
     # Branch not local — fetch and create a tracking branch.
+    # Use --depth=1 to keep shallow clones shallow.
     fetch = subprocess.run(
-        ["git", "-C", str(clone_dir), "fetch", "origin", branch],
+        ["git", "-C", str(clone_dir), "fetch", "--depth", "1",
+         "origin", branch],
         capture_output=True, text=True, timeout=60,
     )
     if fetch.returncode != 0:
@@ -385,14 +387,22 @@ def _checkout_branch(clone_dir: Path, branch: str) -> None:
             f"git fetch origin {branch} failed: {fetch.stderr.strip()}"
         )
 
+    # Try origin/<branch> first; fall back to FETCH_HEAD for shallow clones
+    # where fetch doesn't create a remote tracking ref.
     result = subprocess.run(
         ["git", "-C", str(clone_dir), "checkout", "-b", branch,
          f"origin/{branch}"],
         capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:
+        result = subprocess.run(
+            ["git", "-C", str(clone_dir), "checkout", "-b", branch,
+             "FETCH_HEAD"],
+            capture_output=True, text=True, timeout=30,
+        )
+    if result.returncode != 0:
         raise RuntimeError(
-            f"git checkout -b {branch} origin/{branch} failed: "
+            f"git checkout -b {branch} failed: "
             f"{result.stderr.strip()}"
         )
     logger.debug("checked out branch: %s (from origin)", branch)
