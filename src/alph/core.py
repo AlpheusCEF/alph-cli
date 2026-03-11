@@ -969,6 +969,41 @@ def init_pool(
 
     actual_reg_id, registry_home = found
 
+    # Remote registry handling: resolve actual filesystem path.
+    entry = cfg.registries.get(actual_reg_id)
+    if entry and is_remote_registry(entry.pool_home):
+        mode = effective_mode(entry)
+        if mode == "ro":
+            return PoolResult(
+                pool_path=Path(),
+                valid=False,
+                errors=[
+                    f"registry '{actual_reg_id}' is read-only. "
+                    "Set mode: rw in config to enable writes.",
+                ],
+                config_path=global_config_dir / "config.yaml",
+            )
+        # RW remote: resolve clone_path + subpath.
+        ref = parse_remote_registry(entry.pool_home)
+        clone_dir = Path(entry.clone_path) if entry.clone_path else None
+        if clone_dir is None or not (clone_dir / ".git").is_dir():
+            clone_hint = (
+                f" at {clone_dir}" if clone_dir
+                else " (no clone_path configured)"
+            )
+            return PoolResult(
+                pool_path=Path(),
+                valid=False,
+                errors=[
+                    f"registry '{actual_reg_id}' has no local clone"
+                    f"{clone_hint}. "
+                    f"Run 'alph registry clone {actual_reg_id}' first.",
+                ],
+                config_path=global_config_dir / "config.yaml",
+            )
+        # Use clone_path + subpath as the real registry home.
+        registry_home = clone_dir / ref.subpath if ref.subpath else clone_dir
+
     pool_path = registry_home / name
 
     # Check for duplicate: pool already in config.

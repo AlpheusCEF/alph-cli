@@ -1731,6 +1731,83 @@ def test_init_pool_preserves_config_key_order(tmp_path: Path) -> None:
     assert creator_idx < default_idx < reg_idx
 
 
+def test_init_pool_rejects_ro_remote_registry(tmp_path: Path) -> None:
+    """init_pool errors when the target registry is read-only remote."""
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    config_path = global_dir / "config.yaml"
+    config_path.write_text(
+        "registries:\n"
+        "  remote-ro:\n"
+        "    pool_home: git@github.com:org/repo.git:/registry\n"
+        "    context: Read-only remote.\n"
+        "    mode: ro\n"
+    )
+    result = init_pool(
+        registry_id="remote-ro",
+        name="my-pool",
+        context="Should fail.",
+        cwd=tmp_path,
+        global_config_dir=global_dir,
+    )
+    assert not result.valid
+    assert any("read-only" in e for e in result.errors)
+
+
+def test_init_pool_rw_remote_requires_clone(tmp_path: Path) -> None:
+    """init_pool errors when RW remote registry has no clone on disk."""
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    config_path = global_dir / "config.yaml"
+    config_path.write_text(
+        "registries:\n"
+        "  remote-rw:\n"
+        "    pool_home: git@github.com:org/repo.git:/registry\n"
+        "    context: RW remote.\n"
+        "    mode: rw\n"
+        "    clone_path: " + str(tmp_path / "nonexistent-clone") + "\n"
+    )
+    result = init_pool(
+        registry_id="remote-rw",
+        name="my-pool",
+        context="Should fail.",
+        cwd=tmp_path,
+        global_config_dir=global_dir,
+    )
+    assert not result.valid
+    assert any("clone" in e.lower() for e in result.errors)
+
+
+def test_init_pool_rw_remote_uses_clone_path(tmp_path: Path) -> None:
+    """init_pool creates pool directory inside clone_path + subpath for RW remote."""
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    clone_dir = tmp_path / "clone"
+    (clone_dir / "registry" / ".git").mkdir(parents=True)
+    # Make it look like a git repo by putting .git at clone root.
+    (clone_dir / ".git").mkdir(exist_ok=True)
+    config_path = global_dir / "config.yaml"
+    config_path.write_text(
+        "registries:\n"
+        "  remote-rw:\n"
+        "    pool_home: git@github.com:org/repo.git:/registry\n"
+        "    context: RW remote.\n"
+        "    mode: rw\n"
+        "    clone_path: " + str(clone_dir) + "\n"
+    )
+    result = init_pool(
+        registry_id="remote-rw",
+        name="my-pool",
+        context="A remote pool.",
+        cwd=tmp_path,
+        global_config_dir=global_dir,
+    )
+    assert result.valid
+    assert result.pool_path == clone_dir / "registry" / "my-pool"
+    assert (result.pool_path / "snapshots").is_dir()
+    assert (result.pool_path / "live").is_dir()
+
+
 def test_init_pool_rejects_duplicate_name_in_config(tmp_path: Path) -> None:
     """init_pool errors when a pool with the same name already exists in config."""
     global_dir = tmp_path / "global"
