@@ -51,6 +51,7 @@ registry_app = typer.Typer(help="Registry commands.", invoke_without_command=Tru
 pool_app = typer.Typer(help="Pool commands.", invoke_without_command=True, context_settings=_help_settings)
 config_app = typer.Typer(help="Config file commands.", context_settings=_help_settings)
 app.add_typer(registry_app, name="registry")
+app.add_typer(registry_app, name="reg", hidden=True)
 app.add_typer(pool_app, name="pool")
 app.add_typer(config_app, name="config")
 
