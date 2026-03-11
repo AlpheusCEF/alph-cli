@@ -613,3 +613,87 @@ def test_list_remote_default_pool(tmp_path: Path, monkeypatch) -> None:  # type:
         result = runner.invoke(app, ["list"])
     assert result.exit_code == 0
     assert "abc123def456" in result.output
+
+
+def test_registry_list_shows_mode_column(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry list shows mode column (ro for remote, rw for local)."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "local-reg": {
+                "pool_home": str(tmp_path / "local"),
+                "context": "Local.",
+            },
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "list", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code == 0
+    assert "rw" in result.output
+    assert "ro" in result.output
+
+
+def test_registry_check_local_exists(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry check on existing local registry reports ok."""
+    pool_home = tmp_path / "registry"
+    pool_home.mkdir()
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "local-reg": {
+                "pool_home": str(pool_home),
+                "context": "Local test.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "check", "local-reg", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code == 0
+    assert "ok" in result.output
+
+
+def test_registry_check_local_missing(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry check on missing local registry reports error."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "local-reg": {
+                "pool_home": str(tmp_path / "nonexistent"),
+                "context": "Missing.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "check", "local-reg", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "does not exist" in result.output
+
+
+def test_registry_check_unknown_id(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry check on unknown ID reports error with known registries."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "real-reg": {
+                "pool_home": str(tmp_path),
+                "context": "Real.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "check", "ghost", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "not found" in result.output
+    assert "real-reg" in result.output

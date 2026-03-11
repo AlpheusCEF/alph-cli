@@ -275,11 +275,98 @@ def registry_list(
     table = Table(show_header=True, header_style="bold")
     table.add_column("ID", style="dim", width=20)
     table.add_column("name", width=20)
+    table.add_column("mode", width=6)
     table.add_column("context")
     table.add_column("pool home")
     for s in summaries:
-        table.add_row(s.registry_id, s.name, s.context, str(s.home_path))
+        entry = cfg.registries.get(s.registry_id)
+        mode = effective_mode(entry) if entry else "rw"
+        table.add_row(
+            s.registry_id, s.name, mode, s.context, str(s.home_path),
+        )
     console.print(table)
+
+
+@registry_app.command("check")
+def registry_check(
+    registry_id: str = typer.Argument(
+        ..., help="Registry ID or name to check.",
+    ),
+    cwd: Path | None = typer.Option(
+        None, "--cwd", hidden=True,
+        help="Working directory for config lookup.",
+    ),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Verify a remote registry is reachable.
+
+    Runs git ls-remote against the registry's pool_home URL to confirm
+    the remote is accessible with current credentials.
+    """
+    _apply_verbose(verbose)
+    resolved_cwd = cwd if cwd is not None else Path.cwd()
+    cfg = _load_cli_config(cwd=resolved_cwd)
+
+    from alph.core import find_registry_config
+
+    found = find_registry_config(registry_id, cfg=cfg)
+    if found is None:
+        known = ", ".join(cfg.registries.keys()) or "(none)"
+        console.print(
+            f"[red]error:[/red] {registry_id} not found. "
+            f"Known registries: {known}"
+        )
+        raise typer.Exit(code=1)
+
+    reg_id, _ = found
+    entry = cfg.registries[reg_id]
+
+    if not is_remote_registry(entry.pool_home):
+        pool_home_path = Path(entry.pool_home)
+        if pool_home_path.exists():
+            console.print(
+                f"[green]ok:[/green] {reg_id} is a local registry "
+                f"at {entry.pool_home}"
+            )
+        else:
+            console.print(
+                f"[red]error:[/red] {reg_id} local path does not "
+                f"exist: {entry.pool_home}"
+            )
+            raise typer.Exit(code=1)
+        return
+
+    ref = parse_remote_registry(entry.pool_home)
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--exit-code", ref.remote_url],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            console.print(
+                f"[green]ok:[/green] {reg_id} remote is reachable "
+                f"({ref.remote_url})"
+            )
+        else:
+            console.print(
+                f"[red]error:[/red] {reg_id} remote not reachable: "
+                f"{result.stderr.strip()}"
+            )
+            raise typer.Exit(code=1)
+    except subprocess.TimeoutExpired:
+        console.print(
+            f"[red]error:[/red] {reg_id} remote timed out "
+            f"({ref.remote_url})"
+        )
+        raise typer.Exit(code=1) from None
+    except FileNotFoundError:
+        console.print(
+            "[red]error:[/red] git not found. "
+            "Install git to check remote registries."
+        )
+        raise typer.Exit(code=1) from None
 
 
 @pool_app.command("init")
