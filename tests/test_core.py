@@ -1662,6 +1662,67 @@ def test_reserved_names_includes_all() -> None:
     assert "all" in RESERVED_NAMES
 
 
+def test_init_registry_writes_remote_fields_to_config(tmp_path: Path) -> None:
+    """init_registry writes mode, clone_path, branch, auto_push, auto_pull."""
+    global_dir = tmp_path / "global"
+    result = init_registry(
+        pool_home=Path("git@github.com:org/repo.git:/registry"),
+        registry_id="remote-test",
+        context="Remote registry.",
+        mode="rw",
+        clone_path="/tmp/my-clone",
+        branch="main",
+        auto_push=True,
+        auto_pull=True,
+        global_config_dir=global_dir,
+    )
+    assert result.valid
+    config = yaml.safe_load((global_dir / "config.yaml").read_text())
+    entry = config["registries"]["remote-test"]
+    assert entry["pool_home"] == "git@github.com:org/repo.git:/registry"
+    assert entry["mode"] == "rw"
+    assert entry["clone_path"] == "/tmp/my-clone"
+    assert entry["branch"] == "main"
+    assert entry["auto_push"] is True
+    assert entry["auto_pull"] is True
+
+
+def test_init_registry_skips_mkdir_for_remote_url(tmp_path: Path) -> None:
+    """init_registry does not try to mkdir a git remote URL."""
+    global_dir = tmp_path / "global"
+    # Use a unique path that definitely does not exist.
+    url = "git@github.com:org/unique-test-repo-9999.git:/registry"
+    result = init_registry(
+        pool_home=Path(url),
+        registry_id="remote-test",
+        context="Remote registry.",
+        mode="ro",
+        global_config_dir=global_dir,
+    )
+    assert result.valid
+    config = yaml.safe_load((global_dir / "config.yaml").read_text())
+    assert config["registries"]["remote-test"]["pool_home"] == url
+
+
+def test_init_registry_omits_empty_optional_fields(tmp_path: Path) -> None:
+    """init_registry does not write empty strings for unset optional fields."""
+    global_dir = tmp_path / "global"
+    init_registry(
+        pool_home=tmp_path / "reg",
+        registry_id="local-test",
+        context="Local registry.",
+        global_config_dir=global_dir,
+    )
+    config = yaml.safe_load((global_dir / "config.yaml").read_text())
+    entry = config["registries"]["local-test"]
+    assert "mode" not in entry
+    assert "clone_path" not in entry
+    assert "branch" not in entry
+    assert "auto_push" not in entry
+    assert "auto_pull" not in entry
+    assert "name" not in entry
+
+
 def test_init_registry_rejects_reserved_name(tmp_path: Path) -> None:
     """init_registry rejects reserved IDs like 'all'."""
     result = init_registry(

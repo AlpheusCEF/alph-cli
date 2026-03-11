@@ -833,22 +833,33 @@ def init_registry(
     registry_id: str,
     context: str,
     name: str = "",
+    mode: str = "",
+    clone_path: str = "",
+    branch: str = "",
+    auto_push: bool | None = None,
+    auto_pull: bool | None = None,
     global_config_dir: Path,
 ) -> RegistryResult:
-    """Create a registry pool_home directory and register it in the global config.
+    """Create a registry and register it in the global config.
 
-    The registry definition (context, name, pools) is written into the global
-    config's ``registries`` map as a dict entry — no separate ``config.yaml``
-    is created inside ``pool_home``. The ``pool_home`` directory is where pool
-    subdirectories will be created.
+    The registry definition (context, name, pools, and remote options) is
+    written into the global config's ``registries`` map. For local registries,
+    the ``pool_home`` directory is created on disk. For remote registries
+    (git URLs), no directory is created.
 
     Args:
-        pool_home: Directory to create as the registry root.
+        pool_home: Directory or git remote URL (e.g.
+            ``git@github.com:org/repo.git:/subpath``).
         registry_id: Machine identifier for the registry.
         context: Human/LLM-readable description.
         name: Optional human-readable name.
-        global_config_dir: Global alph config directory. The registry entry is
-            written here and ``default_registry`` is set if none exists.
+        mode: Access mode: ``"ro"`` or ``"rw"``. Empty string means auto
+            (ro for remote, rw for local).
+        clone_path: Local directory for RW clone (remote registries only).
+        branch: Git branch for RO reads and RW clone checkout.
+        auto_push: Push after commit. ``None`` means use smart default.
+        auto_pull: Pull before read. ``None`` means use smart default.
+        global_config_dir: Global alph config directory.
 
     Returns:
         RegistryResult with config_path pointing to the global config,
@@ -861,7 +872,8 @@ def init_registry(
             config_path=global_config_dir / "config.yaml",
             set_as_default=False,
         )
-    pool_home.mkdir(parents=True, exist_ok=True)
+    if not is_remote_registry(str(pool_home)):
+        pool_home.mkdir(parents=True, exist_ok=True)
     global_config_dir.mkdir(parents=True, exist_ok=True)
     global_config_path = global_config_dir / "config.yaml"
 
@@ -876,9 +888,20 @@ def init_registry(
         global_registries = {}
 
     # Write rich dict entry: pool_home path + metadata.
+    # Only include optional fields when explicitly set to keep config clean.
     registry_entry: dict[str, object] = {"pool_home": str(pool_home), "context": context}
     if name:
         registry_entry["name"] = name
+    if mode:
+        registry_entry["mode"] = mode
+    if clone_path:
+        registry_entry["clone_path"] = clone_path
+    if branch:
+        registry_entry["branch"] = branch
+    if auto_push is not None:
+        registry_entry["auto_push"] = auto_push
+    if auto_pull is not None:
+        registry_entry["auto_pull"] = auto_pull
     global_registries[registry_id] = registry_entry
     global_data["registries"] = global_registries
 

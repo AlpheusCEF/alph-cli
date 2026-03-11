@@ -400,29 +400,37 @@ def _registry_default(ctx: typer.Context) -> None:
 
 @registry_app.command("init")
 def registry_init(
-    pool_home: Path = typer.Option(..., "--pool-home", help="Directory where pool subdirectories will be created. The registry definition is written into the global config, not here."),
+    pool_home: str = typer.Option(..., "--pool-home", help="Directory or git remote URL (e.g. git@github.com:org/repo.git:/subpath)."),
     registry_id: str = typer.Option(..., "--id", help="Machine identifier for the registry."),
     context: str = typer.Option(..., "--context", "-c", help="Human/LLM-readable description."),
     name: str = typer.Option("", "--name", help="Optional human-readable name."),
+    mode: str = typer.Option("", "--mode", help="Access mode: 'ro' or 'rw'. Auto-detected if omitted (ro for remote, rw for local)."),
+    clone_path: str = typer.Option("", "--clone-path", help="Local directory for RW clone (remote registries only)."),
+    branch: str = typer.Option("", "--branch", help="Git branch for RO reads and RW clone checkout."),
+    auto_push: bool | None = typer.Option(None, "--auto-push/--no-auto-push", help="Push after commit. Default: true for RW remote, false for local."),
+    auto_pull: bool | None = typer.Option(None, "--auto-pull/--no-auto-pull", help="Pull before read. Default: true for RW remote, false for local."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
-    """Create a registry pool_home directory and register it in the global config.
+    """Create a registry and register it in the global config.
 
-    The registry definition (id, context, name) is written into the global
-    config (~/.config/alph/config.yaml). The --pool-home directory is created but
-    receives no config file — it is just the directory where pool subdirectories
-    will live.
+    The registry definition is written into the global config
+    (~/.config/alph/config.yaml). For local registries, the --pool-home
+    directory is created on disk. For remote registries (git URLs), no
+    directory is created.
 
-    If no default registry is set yet, this one becomes the default, enabling
-    'alph add' and 'alph list' to work without --pool or --creator flags
-    (once creator and default_pool are also configured).
+    If no default registry is set yet, this one becomes the default.
     """
     _apply_verbose(verbose)
     result = init_registry(
-        pool_home=pool_home,
+        pool_home=Path(pool_home),
         registry_id=registry_id,
         context=context,
         name=name,
+        mode=mode,
+        clone_path=clone_path,
+        branch=branch,
+        auto_push=auto_push,
+        auto_pull=auto_pull,
         global_config_dir=_global_config_dir(),
     )
     if not result.valid:
@@ -431,6 +439,12 @@ def registry_init(
         raise typer.Exit(code=1)
     console.print(f"[green]registry created:[/green] {registry_id}")
     console.print(f"  pool home: {pool_home}")
+    if mode:
+        console.print(f"  mode: {mode}")
+    if branch:
+        console.print(f"  branch: {branch}")
+    if clone_path:
+        console.print(f"  clone path: {clone_path}")
     console.print(f"  config: {result.config_path}")
     if result.set_as_default:
         console.print("  [dim]set as default registry[/dim]")
