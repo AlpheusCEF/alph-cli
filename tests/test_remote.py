@@ -1,6 +1,7 @@
 """Behavior tests for remote registry providers and resolution."""
 
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -9,8 +10,12 @@ import pytest
 from alph.remote import (
     FileEntry,
     GitHubProvider,
+    clone_remote_registry,
+    default_clone_dir,
     detect_forge,
     provider_for_url,
+    pull_remote_registry,
+    push_remote_registry,
     resolve_pool_readonly,
 )
 
@@ -383,3 +388,144 @@ def test_resolve_pool_readonly_root_subpath() -> None:
 
     with resolve_pool_readonly(mock_provider, "") as pool_path:
         assert (pool_path / "snapshots" / "a.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# default_clone_dir
+# ---------------------------------------------------------------------------
+
+
+def test_default_clone_dir_uses_sha256_prefix() -> None:
+    """default_clone_dir returns ~/.cache/alph/clones/<sha256[:12]>."""
+    url = "git@github.com:org/repo.git"
+    result = default_clone_dir(url)
+    import hashlib
+    expected_hash = hashlib.sha256(url.encode()).hexdigest()[:12]
+    assert result == Path.home() / ".cache" / "alph" / "clones" / expected_hash
+
+
+def test_default_clone_dir_different_urls_produce_different_dirs() -> None:
+    """Different URLs produce different clone directories."""
+    dir1 = default_clone_dir("git@github.com:org/repo1.git")
+    dir2 = default_clone_dir("git@github.com:org/repo2.git")
+    assert dir1 != dir2
+
+
+# ---------------------------------------------------------------------------
+# clone_remote_registry
+# ---------------------------------------------------------------------------
+
+
+def test_clone_remote_registry_runs_git_clone(tmp_path: Path) -> None:
+    """clone_remote_registry calls git clone with correct args."""
+    clone_dir = tmp_path / "clone"
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+        result = clone_remote_registry("git@github.com:org/repo.git", clone_dir)
+    assert result == clone_dir
+    call_args = mock_run.call_args[0][0]
+    assert call_args[0] == "git"
+    assert call_args[1] == "clone"
+    assert "--depth" in call_args
+    assert "git@github.com:org/repo.git" in call_args
+
+
+def test_clone_remote_registry_skips_existing(tmp_path: Path) -> None:
+    """clone_remote_registry is a no-op when .git already exists."""
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    with patch("alph.remote.subprocess.run") as mock_run:
+        result = clone_remote_registry("git@github.com:org/repo.git", clone_dir)
+    mock_run.assert_not_called()
+    assert result == clone_dir
+
+
+def test_clone_remote_registry_raises_on_failure(tmp_path: Path) -> None:
+    """clone_remote_registry raises RuntimeError on git failure."""
+    clone_dir = tmp_path / "clone"
+    mock_result = MagicMock()
+    mock_result.returncode = 128
+    mock_result.stderr = "fatal: repository not found"
+    with patch("alph.remote.subprocess.run", return_value=mock_result), \
+            pytest.raises(RuntimeError, match="git clone failed"):
+        clone_remote_registry("git@github.com:org/repo.git", clone_dir)
+
+
+def test_clone_remote_registry_custom_depth(tmp_path: Path) -> None:
+    """clone_remote_registry passes custom depth to git clone."""
+    clone_dir = tmp_path / "clone"
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+        clone_remote_registry("git@github.com:org/repo.git", clone_dir, depth=5)
+    call_args = mock_run.call_args[0][0]
+    depth_idx = call_args.index("--depth")
+    assert call_args[depth_idx + 1] == "5"
+
+
+# ---------------------------------------------------------------------------
+# pull_remote_registry
+# ---------------------------------------------------------------------------
+
+
+def test_pull_remote_registry_runs_git_pull(tmp_path: Path) -> None:
+    """pull_remote_registry calls git pull --ff-only."""
+    (tmp_path / ".git").mkdir()
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+        pull_remote_registry(tmp_path)
+    call_args = mock_run.call_args[0][0]
+    assert "pull" in call_args
+    assert "--ff-only" in call_args
+
+
+def test_pull_remote_registry_raises_on_not_git_repo(tmp_path: Path) -> None:
+    """pull_remote_registry raises FileNotFoundError for non-git dir."""
+    with pytest.raises(FileNotFoundError, match="Not a git repository"):
+        pull_remote_registry(tmp_path)
+
+
+def test_pull_remote_registry_raises_on_failure(tmp_path: Path) -> None:
+    """pull_remote_registry raises RuntimeError on git failure."""
+    (tmp_path / ".git").mkdir()
+    mock_result = MagicMock()
+    mock_result.returncode = 1
+    mock_result.stderr = "merge conflict"
+    with patch("alph.remote.subprocess.run", return_value=mock_result), \
+            pytest.raises(RuntimeError, match="git pull failed"):
+        pull_remote_registry(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# push_remote_registry
+# ---------------------------------------------------------------------------
+
+
+def test_push_remote_registry_runs_git_push(tmp_path: Path) -> None:
+    """push_remote_registry calls git push."""
+    (tmp_path / ".git").mkdir()
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+        push_remote_registry(tmp_path)
+    call_args = mock_run.call_args[0][0]
+    assert "push" in call_args
+
+
+def test_push_remote_registry_raises_on_not_git_repo(tmp_path: Path) -> None:
+    """push_remote_registry raises FileNotFoundError for non-git dir."""
+    with pytest.raises(FileNotFoundError, match="Not a git repository"):
+        push_remote_registry(tmp_path)
+
+
+def test_push_remote_registry_raises_on_failure(tmp_path: Path) -> None:
+    """push_remote_registry raises RuntimeError on git failure."""
+    (tmp_path / ".git").mkdir()
+    mock_result = MagicMock()
+    mock_result.returncode = 1
+    mock_result.stderr = "permission denied"
+    with patch("alph.remote.subprocess.run", return_value=mock_result), \
+            pytest.raises(RuntimeError, match="git push failed"):
+        push_remote_registry(tmp_path)

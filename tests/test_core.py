@@ -1295,3 +1295,52 @@ def test_effective_mode_local_ignores_ro() -> None:
 
     entry = RegistryEntry(pool_home="/tmp/local", mode="ro")
     assert effective_mode(entry) == "rw"
+
+
+def test_load_config_reads_auto_push_from_yaml(tmp_path: Path) -> None:
+    """load_config picks up auto_push from registry config YAML."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+                "mode": "rw",
+                "auto_push": True,
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].auto_push is True
+
+
+def test_load_config_auto_push_defaults_false(tmp_path: Path) -> None:
+    """load_config defaults auto_push to False when omitted."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].auto_push is False
+
+
+def test_load_config_reads_clone_path_from_yaml(tmp_path: Path) -> None:
+    """load_config picks up clone_path from registry config YAML."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+                "mode": "rw",
+                "clone_path": "/tmp/my-clone",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].clone_path == "/tmp/my-clone"

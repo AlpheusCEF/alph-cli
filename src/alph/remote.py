@@ -1,11 +1,14 @@
-"""Remote registry providers for read-only access to git-hosted pools.
+"""Remote registry access — read-only API providers and clone management.
 
-Each provider implements listing and reading pool node files from a remote
-git forge without requiring a local clone. The ``resolve_pool_readonly``
-context manager fetches files to an ephemeral tmpdir that existing core
-functions can operate on via normal ``Path`` objects.
+RO mode: providers list and read pool node files from a remote forge
+without a local clone. The ``resolve_pool_readonly`` context manager
+fetches files to an ephemeral tmpdir.
+
+RW mode: ``clone_remote_registry`` and ``pull_remote_registry`` manage
+persistent local clones for write operations.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -332,3 +335,101 @@ def resolve_pool_readonly(
                 local_path.write_text(text)
 
         yield pool_root
+
+
+# ---------------------------------------------------------------------------
+# Clone management (RW mode)
+# ---------------------------------------------------------------------------
+
+
+def default_clone_dir(remote_url: str) -> Path:
+    """Return the default cache directory for a remote registry clone.
+
+    Uses ``~/.cache/alph/clones/<sha256(url)[:12]>/``.
+    """
+    url_hash = hashlib.sha256(remote_url.encode()).hexdigest()[:12]
+    return Path.home() / ".cache" / "alph" / "clones" / url_hash
+
+
+def clone_remote_registry(
+    remote_url: str,
+    clone_dir: Path,
+    *,
+    depth: int = 1,
+) -> Path:
+    """Clone a remote git repository for RW access.
+
+    If the clone directory already exists and contains a ``.git`` dir,
+    this is a no-op and returns the existing path.
+
+    Args:
+        remote_url: Git remote URL.
+        clone_dir: Local directory to clone into.
+        depth: Clone depth (default 1 for shallow clone).
+
+    Returns:
+        Path to the clone directory.
+
+    Raises:
+        RuntimeError: If the clone fails.
+    """
+    if (clone_dir / ".git").is_dir():
+        logger.debug("clone already exists: %s", clone_dir)
+        return clone_dir
+
+    clone_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = ["git", "clone", "--depth", str(depth), remote_url, str(clone_dir)]
+    logger.debug("cloning: %s", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git clone failed (exit {result.returncode}): "
+            f"{result.stderr.strip()}"
+        )
+    return clone_dir
+
+
+def pull_remote_registry(clone_dir: Path) -> None:
+    """Pull latest changes in an existing clone.
+
+    Raises:
+        RuntimeError: If the pull fails.
+        FileNotFoundError: If clone_dir is not a git repo.
+    """
+    if not (clone_dir / ".git").is_dir():
+        raise FileNotFoundError(
+            f"Not a git repository: {clone_dir}"
+        )
+    logger.debug("pulling: %s", clone_dir)
+    result = subprocess.run(
+        ["git", "-C", str(clone_dir), "pull", "--ff-only"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git pull failed (exit {result.returncode}): "
+            f"{result.stderr.strip()}"
+        )
+
+
+def push_remote_registry(clone_dir: Path) -> None:
+    """Push commits from a local clone to the remote.
+
+    Raises:
+        RuntimeError: If the push fails.
+    """
+    if not (clone_dir / ".git").is_dir():
+        raise FileNotFoundError(
+            f"Not a git repository: {clone_dir}"
+        )
+    logger.debug("pushing: %s", clone_dir)
+    result = subprocess.run(
+        ["git", "-C", str(clone_dir), "push"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git push failed (exit {result.returncode}): "
+            f"{result.stderr.strip()}"
+        )

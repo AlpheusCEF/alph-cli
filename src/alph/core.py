@@ -41,6 +41,7 @@ class RegistryEntry:
     pools: dict[str, object] = field(default_factory=dict)
     mode: str = ""  # "" = auto (ro for remote, rw for local), "ro", or "rw"
     clone_path: str = ""  # user-specified local clone dir (rw remote only)
+    auto_push: bool = False  # push after commit (rw remote only)
 
 
 @dataclass(frozen=True)
@@ -456,6 +457,7 @@ def load_config(
                         pools=dict(pools_raw) if isinstance(pools_raw, dict) else {},
                         mode=str(v.get("mode", "")),
                         clone_path=str(v.get("clone_path", "")),
+                        auto_push=bool(v.get("auto_push", False)),
                     )
         merged.update({k: v for k, v in data.items() if k != "registries"})
 

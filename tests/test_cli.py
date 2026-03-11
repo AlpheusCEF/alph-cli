@@ -697,3 +697,261 @@ def test_registry_check_unknown_id(tmp_path: Path, monkeypatch) -> None:  # type
     assert result.exit_code != 0
     assert "not found" in result.output
     assert "real-reg" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Registry clone and pull commands
+# ---------------------------------------------------------------------------
+
+
+def test_registry_clone_calls_git_clone(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry clone creates a local clone of a remote registry."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote.",
+                "mode": "rw",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("alph.remote.subprocess.run", return_value=mock_result):
+        result = runner.invoke(app, [
+            "registry", "clone", "remote-reg",
+            "--clone-path", str(tmp_path / "clone"),
+            "--cwd", str(tmp_path),
+        ])
+    assert result.exit_code == 0
+    assert "cloned" in result.output
+
+
+def test_registry_clone_errors_for_local(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry clone errors when the registry is local."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "local-reg": {
+                "pool_home": str(tmp_path / "local"),
+                "context": "Local.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "clone", "local-reg", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "local registry" in result.output
+
+
+def test_registry_clone_errors_for_unknown(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry clone errors for unknown registry ID."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {"registries": {}})
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "clone", "ghost", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "not found" in result.output
+
+
+def test_registry_pull_calls_git_pull(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry pull pulls latest changes for a cloned remote registry."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("alph.remote.subprocess.run", return_value=mock_result):
+        result = runner.invoke(app, [
+            "registry", "pull", "remote-reg", "--cwd", str(tmp_path),
+        ])
+    assert result.exit_code == 0
+    assert "pulled" in result.output
+
+
+def test_registry_pull_errors_no_clone(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry pull errors when no clone exists."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote.",
+                "clone_path": str(tmp_path / "no-such-clone"),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "pull", "remote-reg", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "no clone found" in result.output
+
+
+def test_registry_pull_errors_for_local(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry pull errors when the registry is local."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "local-reg": {
+                "pool_home": str(tmp_path / "local"),
+                "context": "Local.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "pull", "local-reg", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "local registry" in result.output
+
+
+# ---------------------------------------------------------------------------
+# RW clone-based pool context
+# ---------------------------------------------------------------------------
+
+
+def test_add_remote_rw_pool_uses_clone(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph add against an RW remote pool uses the local clone."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    # Create a fake clone with pool structure.
+    pool_in_clone = clone_dir / "data" / "vehicles"
+    (pool_in_clone / "snapshots").mkdir(parents=True)
+    (pool_in_clone / "live").mkdir(parents=True)
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "creator": "test@example.com",
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    # Mock clone_remote_registry to be a no-op (clone already exists).
+    with patch("alph.cli.clone_remote_registry", return_value=clone_dir):
+        result = runner.invoke(app, [
+            "add", "-c", "Test node via RW.",
+            "--pool", "git@github.com:org/repo.git:/data/vehicles",
+            "--creator", "test@example.com",
+        ])
+    assert result.exit_code == 0
+    assert "node created" in result.output
+    # Node should be written to the clone.
+    nodes = list((pool_in_clone / "snapshots").glob("*.md"))
+    assert len(nodes) == 1
+
+
+# ---------------------------------------------------------------------------
+# --pull flag
+# ---------------------------------------------------------------------------
+
+
+def test_list_pull_flag_triggers_pull(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph list --pull triggers a git pull for RW clones."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    pool_in_clone = clone_dir / "data" / "vehicles"
+    (pool_in_clone / "snapshots").mkdir(parents=True)
+    (pool_in_clone / "live").mkdir(parents=True)
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_pull_result = MagicMock()
+    mock_pull_result.returncode = 0
+    with patch("alph.cli.clone_remote_registry", return_value=clone_dir), \
+            patch("alph.cli.pull_remote_registry") as mock_pull:
+        result = runner.invoke(app, [
+            "list",
+            "--pool", "git@github.com:org/repo.git:/data/vehicles",
+            "--pull",
+        ])
+    assert result.exit_code == 0
+    mock_pull.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# --registry global option
+# ---------------------------------------------------------------------------
+
+
+def test_global_registry_option_with_url(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph --registry <url> list --pool <name> resolves to remote pool."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_prov = _mock_provider()
+    with patch("alph.cli.provider_for_url", return_value=mock_prov):
+        result = runner.invoke(app, [
+            "--registry", "git@github.com:org/repo.git:/reg",
+            "list", "--pool", "vehicles",
+        ])
+    assert result.exit_code == 0
+    assert "abc123def456" in result.output
+
+
+def test_global_registry_option_with_id(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph --registry <id> list --pool <name> resolves pool from that registry."""
+    global_dir = tmp_path / "global"
+    reg_dir = tmp_path / "reg"
+    pool = reg_dir / "vehicles"
+    (pool / "snapshots").mkdir(parents=True)
+    (pool / "live").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "registries": {
+            "my-reg": {
+                "pool_home": str(reg_dir),
+                "context": "Test.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "--registry", "my-reg",
+        "list", "--pool", "vehicles",
+    ])
+    assert result.exit_code == 0
+
+
+def test_global_registry_option_unknown_errors(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph --registry <unknown> list errors."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {"registries": {}})
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "--registry", "ghost",
+        "list", "--pool", "vehicles",
+    ])
+    assert result.exit_code != 0
+    assert "not found" in result.output

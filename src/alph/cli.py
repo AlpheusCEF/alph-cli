@@ -35,7 +35,14 @@ from alph.core import (
     show_node,
     validate_node,
 )
-from alph.remote import provider_for_url, resolve_pool_readonly
+from alph.remote import (
+    clone_remote_registry,
+    default_clone_dir,
+    provider_for_url,
+    pull_remote_registry,
+    push_remote_registry,
+    resolve_pool_readonly,
+)
 
 _help_settings = {"help_option_names": ["-h", "--help"]}
 app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.", context_settings=_help_settings)
@@ -56,6 +63,7 @@ def _console_width() -> int:
 console = Console(width=_console_width())
 
 _verbose: bool = False
+_registry_override: str | None = None
 
 _VERBOSE_OPT = typer.Option(False, "--verbose", "-v", help="Enable debug logging.")
 
@@ -80,8 +88,15 @@ def _version_callback(value: bool) -> None:
 def _main(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging.", is_eager=False),
     version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True, help="Show version and exit."),
+    registry: str | None = typer.Option(
+        None, "--registry",
+        help="Override registry: ID, name, or remote git URL. "
+             "Scopes pool resolution to this registry for this invocation.",
+    ),
 ) -> None:
     """Alpheus Context Engine Framework."""
+    global _registry_override
+    _registry_override = registry
     if not logging.root.handlers:
         logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     _apply_verbose(verbose)
@@ -117,7 +132,54 @@ def _require_pool(pool_flag: str | None, cfg: AlphConfig) -> str:
     2. Absolute path or existing relative path — returned as-is.
     3. Pool name found in a registry — resolved to registry_home/name string.
     4. Falls back to default_registry/default_pool from config.
+
+    If ``--registry`` global option was used, pool resolution is scoped
+    to that registry (by ID/name) or constructed from that URL.
     """
+    reg_override = _registry_override
+
+    # If --registry is a remote URL, combine with pool name.
+    if reg_override and is_remote_registry(reg_override):
+        ref = parse_remote_registry(reg_override)
+        pool_name = pool_flag or cfg.default_pool
+        if not pool_name:
+            console.print(
+                "[red]error:[/red] --pool required when --registry "
+                "is a remote URL."
+            )
+            raise typer.Exit(code=1)
+        pool_subpath = (
+            f"{ref.subpath}/{pool_name}" if ref.subpath else pool_name
+        )
+        return f"{ref.remote_url}:/{pool_subpath}"
+
+    # If --registry is an ID/name, scope resolution to that registry.
+    if reg_override:
+        from alph.core import find_registry_config
+
+        found = find_registry_config(reg_override, cfg=cfg)
+        if found is None:
+            console.print(
+                f"[red]error:[/red] registry '{reg_override}' not found."
+            )
+            raise typer.Exit(code=1)
+        reg_id, _ = found
+        entry = cfg.registries[reg_id]
+        pool_name = pool_flag or cfg.default_pool
+        if not pool_name:
+            console.print(
+                "[red]error:[/red] --pool required when --registry is set."
+            )
+            raise typer.Exit(code=1)
+        if is_remote_registry(entry.pool_home):
+            ref = parse_remote_registry(entry.pool_home)
+            pool_subpath = (
+                f"{ref.subpath}/{pool_name}" if ref.subpath
+                else pool_name
+            )
+            return f"{ref.remote_url}:/{pool_subpath}"
+        return str(Path(entry.pool_home) / pool_name)
+
     if pool_flag is not None:
         if is_remote_registry(pool_flag):
             return pool_flag
@@ -136,9 +198,9 @@ def _require_pool(pool_flag: str | None, cfg: AlphConfig) -> str:
     # No flag — check default pool. If the default registry is remote,
     # we need to return the full remote URL + pool name.
     if cfg.default_registry and cfg.default_pool:
-        entry = cfg.registries.get(cfg.default_registry)
-        if entry and is_remote_registry(entry.pool_home):
-            ref = parse_remote_registry(entry.pool_home)
+        default_entry = cfg.registries.get(cfg.default_registry)
+        if default_entry and is_remote_registry(default_entry.pool_home):
+            ref = parse_remote_registry(default_entry.pool_home)
             pool_subpath = (
                 f"{ref.subpath}/{cfg.default_pool}" if ref.subpath
                 else cfg.default_pool
@@ -178,7 +240,8 @@ def _pool_context(
 
     For local pools, yields the path directly. For remote RO pools,
     fetches files to a tmpdir via the provider API and yields that path.
-    For remote RW pools, raises an error (clone-based RW is Phase D).
+    For remote RW pools, clones locally and yields the pool subpath
+    within the clone.
     """
     if not is_remote_registry(pool_str):
         yield Path(pool_str)
@@ -194,18 +257,76 @@ def _pool_context(
         )
         raise typer.Exit(code=1)
 
-    if writable:
-        console.print(
-            "[red]error:[/red] write operations on remote registries "
-            "require a local clone (not yet implemented)."
+    ref = parse_remote_registry(pool_str)
+
+    if mode == "rw":
+        # RW path — use local clone.
+        clone_dir = (
+            Path(entry.clone_path) if entry and entry.clone_path
+            else default_clone_dir(ref.remote_url)
         )
-        raise typer.Exit(code=1)
+        clone_remote_registry(ref.remote_url, clone_dir)
+        pool_path = clone_dir / ref.subpath if ref.subpath else clone_dir
+        yield pool_path
+        return
 
     # RO path — fetch via provider API.
-    ref = parse_remote_registry(pool_str)
     provider = provider_for_url(ref.remote_url)
     with resolve_pool_readonly(provider, ref.subpath) as pool_path:
         yield pool_path
+
+
+def _pull_if_requested(
+    pool_str: str, cfg: AlphConfig, *, pull: bool,
+) -> None:
+    """Pull latest changes for an RW clone if --pull was passed."""
+    if not pull:
+        return
+    if not is_remote_registry(pool_str):
+        return
+    entry = _find_entry_for_pool(pool_str, cfg)
+    mode = effective_mode(entry) if entry else "ro"
+    if mode != "rw":
+        # RO mode — pull is a no-op (fresh API fetch happens automatically).
+        return
+    ref = parse_remote_registry(pool_str)
+    clone_dir = (
+        Path(entry.clone_path) if entry and entry.clone_path
+        else default_clone_dir(ref.remote_url)
+    )
+    try:
+        pull_remote_registry(clone_dir)
+    except FileNotFoundError:
+        console.print(
+            f"[yellow]warning:[/yellow] no clone found at {clone_dir}. "
+            "Skipping pull."
+        )
+    except RuntimeError as exc:
+        console.print(f"[yellow]warning:[/yellow] pull failed: {exc}")
+
+
+def _auto_push_if_configured(
+    pool_str: str, cfg: AlphConfig,
+) -> None:
+    """Push after write if auto_push is set on the registry."""
+    if not is_remote_registry(pool_str):
+        return
+    entry = _find_entry_for_pool(pool_str, cfg)
+    if not entry or not entry.auto_push:
+        return
+    mode = effective_mode(entry)
+    if mode != "rw":
+        return
+    ref = parse_remote_registry(pool_str)
+    clone_dir = (
+        Path(entry.clone_path) if entry.clone_path
+        else default_clone_dir(ref.remote_url)
+    )
+    try:
+        push_remote_registry(clone_dir)
+        console.print("[dim]auto-pushed to remote.[/dim]")
+    except (FileNotFoundError, RuntimeError) as exc:
+        console.print(f"[yellow]warning:[/yellow] auto-push failed: {exc}")
 
 
 def _require_creator(creator_flag: str | None, cfg: AlphConfig) -> str:
@@ -369,6 +490,124 @@ def registry_check(
         raise typer.Exit(code=1) from None
 
 
+@registry_app.command("clone")
+def registry_clone(
+    registry_id: str = typer.Argument(
+        ..., help="Registry ID or name to clone.",
+    ),
+    clone_path: Path | None = typer.Option(
+        None, "--clone-path",
+        help="Local directory to clone into. Default: ~/.cache/alph/clones/<hash>.",
+    ),
+    cwd: Path | None = typer.Option(
+        None, "--cwd", hidden=True,
+        help="Working directory for config lookup.",
+    ),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Clone a remote registry locally for RW access.
+
+    Creates a shallow git clone of the registry's remote URL. If the
+    clone already exists, this is a no-op.
+    """
+    _apply_verbose(verbose)
+    resolved_cwd = cwd if cwd is not None else Path.cwd()
+    cfg = _load_cli_config(cwd=resolved_cwd)
+
+    from alph.core import find_registry_config
+
+    found = find_registry_config(registry_id, cfg=cfg)
+    if found is None:
+        known = ", ".join(cfg.registries.keys()) or "(none)"
+        console.print(
+            f"[red]error:[/red] {registry_id} not found. "
+            f"Known registries: {known}"
+        )
+        raise typer.Exit(code=1)
+
+    reg_id, _ = found
+    entry = cfg.registries[reg_id]
+
+    if not is_remote_registry(entry.pool_home):
+        console.print(
+            f"[red]error:[/red] {reg_id} is a local registry — "
+            "clone is only for remote registries."
+        )
+        raise typer.Exit(code=1)
+
+    ref = parse_remote_registry(entry.pool_home)
+    target = (
+        clone_path
+        or (Path(entry.clone_path) if entry.clone_path else None)
+        or default_clone_dir(ref.remote_url)
+    )
+    try:
+        clone_remote_registry(ref.remote_url, target)
+    except RuntimeError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from None
+    console.print(f"[green]cloned:[/green] {reg_id} -> {target}")
+
+
+@registry_app.command("pull")
+def registry_pull(
+    registry_id: str = typer.Argument(
+        ..., help="Registry ID or name to pull.",
+    ),
+    cwd: Path | None = typer.Option(
+        None, "--cwd", hidden=True,
+        help="Working directory for config lookup.",
+    ),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Pull latest changes for a cloned remote registry.
+
+    Runs git pull --ff-only in the local clone directory.
+    """
+    _apply_verbose(verbose)
+    resolved_cwd = cwd if cwd is not None else Path.cwd()
+    cfg = _load_cli_config(cwd=resolved_cwd)
+
+    from alph.core import find_registry_config
+
+    found = find_registry_config(registry_id, cfg=cfg)
+    if found is None:
+        known = ", ".join(cfg.registries.keys()) or "(none)"
+        console.print(
+            f"[red]error:[/red] {registry_id} not found. "
+            f"Known registries: {known}"
+        )
+        raise typer.Exit(code=1)
+
+    reg_id, _ = found
+    entry = cfg.registries[reg_id]
+
+    if not is_remote_registry(entry.pool_home):
+        console.print(
+            f"[red]error:[/red] {reg_id} is a local registry — "
+            "pull is only for remote registries."
+        )
+        raise typer.Exit(code=1)
+
+    ref = parse_remote_registry(entry.pool_home)
+    clone_dir = (
+        Path(entry.clone_path) if entry.clone_path
+        else default_clone_dir(ref.remote_url)
+    )
+    try:
+        pull_remote_registry(clone_dir)
+    except FileNotFoundError:
+        console.print(
+            f"[red]error:[/red] no clone found at {clone_dir}. "
+            f"Run 'alph registry clone {reg_id}' first."
+        )
+        raise typer.Exit(code=1) from None
+    except RuntimeError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from None
+    console.print(f"[green]pulled:[/green] {reg_id} ({clone_dir})")
+
+
 @pool_app.command("init")
 def pool_init(
     registry: str | None = typer.Option(None, "--registry", help="Registry ID or name. Defaults to default_registry from config."),
@@ -511,6 +750,7 @@ def cmd_add(
         raise typer.Exit(code=0)
     console.print(f"[green]node created:[/green] {result.node_id}")
     console.print(f"  path: {result.path}")
+    _auto_push_if_configured(pool_str, cfg)
 
 
 @app.command("list")
@@ -523,6 +763,7 @@ def cmd_list(
         help="Filter by status: archived, suppressed, all, or comma-separated e.g. archived,suppressed.",
     ),
     output: str = typer.Option("console", "-o", "--output", help="Output format: console (default), json, yaml, csv."),
+    pull: bool = typer.Option(False, "--pull", help="Pull latest changes before listing (RW clones only)."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """List nodes in a pool with frontmatter summary.
@@ -536,6 +777,7 @@ def cmd_list(
     _apply_verbose(verbose)
     cfg = _load_cli_config()
     pool_str = _require_pool(pool, cfg)
+    _pull_if_requested(pool_str, cfg, pull=pull)
 
     # Flatten any comma-separated values passed to -s.
     raw: set[str] = set()
@@ -626,12 +868,14 @@ def cmd_list(
 def cmd_show(
     node_id: str = typer.Argument(..., help="Node ID to display."),
     pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
+    pull: bool = typer.Option(False, "--pull", help="Pull latest changes before showing (RW clones only)."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Display full node content formatted for terminal."""
     _apply_verbose(verbose)
     cfg = _load_cli_config()
     pool_str = _require_pool(pool, cfg)
+    _pull_if_requested(pool_str, cfg, pull=pull)
     with _pool_context(pool_str, cfg) as resolved_pool:
         detail = show_node(resolved_pool, node_id)
     if detail is None:
@@ -654,12 +898,14 @@ def cmd_show(
 @app.command("validate")
 def cmd_validate(
     pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
+    pull: bool = typer.Option(False, "--pull", help="Pull latest changes before validating (RW clones only)."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Check all nodes in a pool against schema."""
     _apply_verbose(verbose)
     cfg = _load_cli_config()
     pool_str = _require_pool(pool, cfg)
+    _pull_if_requested(pool_str, cfg, pull=pull)
 
     # For local pools, check existence before entering context.
     if not is_remote_registry(pool_str) and not Path(pool_str).exists():
