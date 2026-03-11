@@ -464,6 +464,59 @@ def test_clone_remote_registry_custom_depth(tmp_path: Path) -> None:
     assert call_args[depth_idx + 1] == "5"
 
 
+def test_clone_remote_registry_checks_out_branch_on_new_clone(tmp_path: Path) -> None:
+    """clone_remote_registry checks out a branch after cloning when specified."""
+    clone_dir = tmp_path / "clone"
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "main"
+    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+        result = clone_remote_registry(
+            "git@github.com:org/repo.git", clone_dir, branch="seeded",
+        )
+    assert result is True
+    # Should have: clone, rev-parse, fetch, checkout
+    cmds = [call[0][0] for call in mock_run.call_args_list]
+    assert cmds[0][1] == "clone"
+    assert any("fetch" in cmd for cmd in cmds)
+    assert any("checkout" in cmd for cmd in cmds)
+
+
+def test_clone_remote_registry_checks_out_branch_on_existing(tmp_path: Path) -> None:
+    """clone_remote_registry checks out branch on existing clone if not on it."""
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "main"  # currently on main, not seeded
+    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+        result = clone_remote_registry(
+            "git@github.com:org/repo.git", clone_dir, branch="seeded",
+        )
+    assert result is False
+    # Should have: rev-parse, fetch, checkout (no clone)
+    cmds = [call[0][0] for call in mock_run.call_args_list]
+    assert not any(c[1] == "clone" for c in cmds if len(c) > 1)
+    assert any("fetch" in cmd for cmd in cmds)
+    assert any("checkout" in cmd for cmd in cmds)
+
+
+def test_clone_remote_registry_skips_checkout_if_already_on_branch(tmp_path: Path) -> None:
+    """clone_remote_registry skips checkout when already on the requested branch."""
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "seeded"  # already on seeded
+    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+        result = clone_remote_registry(
+            "git@github.com:org/repo.git", clone_dir, branch="seeded",
+        )
+    assert result is False
+    # Only rev-parse, no fetch or checkout
+    assert mock_run.call_count == 1
+
+
 # ---------------------------------------------------------------------------
 # pull_remote_registry
 # ---------------------------------------------------------------------------

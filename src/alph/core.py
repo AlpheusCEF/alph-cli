@@ -42,7 +42,7 @@ class RegistryEntry:
     mode: str = ""  # "" = auto (ro for remote, rw for local), "ro", or "rw"
     clone_path: str = ""  # user-specified local clone dir (rw remote only)
     auto_push: bool = False  # push after commit (rw remote only)
-    branch: str = ""  # git branch for RO reads (default: HEAD)
+    branch: str = ""  # git branch for RO reads and RW clone checkout
 
 
 @dataclass(frozen=True)

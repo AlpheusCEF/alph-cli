@@ -283,7 +283,8 @@ def _pool_context(
             Path(entry.clone_path) if entry and entry.clone_path
             else default_clone_dir(ref.remote_url)
         )
-        clone_remote_registry(ref.remote_url, clone_dir)
+        rw_branch = entry.branch if entry and entry.branch else ""
+        clone_remote_registry(ref.remote_url, clone_dir, branch=rw_branch)
         pool_path = clone_dir / ref.subpath if ref.subpath else clone_dir
         yield pool_path
         return
@@ -561,12 +562,17 @@ def registry_clone(
         or default_clone_dir(ref.remote_url)
     )
     try:
-        created = clone_remote_registry(ref.remote_url, target)
+        created = clone_remote_registry(
+            ref.remote_url, target, branch=entry.branch,
+        )
     except RuntimeError as exc:
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(code=1) from None
     if created:
-        console.print(f"[green]cloned:[/green] {reg_id} -> {target}")
+        msg = f"[green]cloned:[/green] {reg_id} -> {target}"
+        if entry.branch:
+            msg += f" (branch: {entry.branch})"
+        console.print(msg)
     else:
         console.print(f"[green]ok:[/green] {reg_id} already cloned at {target}")
 

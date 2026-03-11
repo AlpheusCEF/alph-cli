@@ -351,30 +351,65 @@ def default_clone_dir(remote_url: str) -> Path:
     return Path.home() / ".cache" / "alph" / "clones" / url_hash
 
 
+def _checkout_branch(clone_dir: Path, branch: str) -> None:
+    """Check out a branch in a clone, fetching it first if shallow."""
+    # Check current branch.
+    head = subprocess.run(
+        ["git", "-C", str(clone_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if head.returncode == 0 and head.stdout.strip() == branch:
+        return
+
+    # For shallow clones, fetch the branch before checking out.
+    fetch = subprocess.run(
+        ["git", "-C", str(clone_dir), "fetch", "origin", branch],
+        capture_output=True, text=True, timeout=60,
+    )
+    if fetch.returncode != 0:
+        raise RuntimeError(
+            f"git fetch origin {branch} failed: {fetch.stderr.strip()}"
+        )
+
+    result = subprocess.run(
+        ["git", "-C", str(clone_dir), "checkout", branch],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git checkout {branch} failed: {result.stderr.strip()}"
+        )
+    logger.debug("checked out branch: %s", branch)
+
+
 def clone_remote_registry(
     remote_url: str,
     clone_dir: Path,
     *,
     depth: int = 1,
+    branch: str = "",
 ) -> bool:
     """Clone a remote git repository for RW access.
 
     If the clone directory already exists and contains a ``.git`` dir,
-    this is a no-op.
+    ensures the requested branch is checked out but does not re-clone.
 
     Args:
         remote_url: Git remote URL.
         clone_dir: Local directory to clone into.
         depth: Clone depth (default 1 for shallow clone).
+        branch: Git branch to check out. Empty string means default branch.
 
     Returns:
         True if a new clone was created, False if one already existed.
 
     Raises:
-        RuntimeError: If the clone fails.
+        RuntimeError: If the clone or checkout fails.
     """
     if (clone_dir / ".git").is_dir():
         logger.debug("clone already exists: %s", clone_dir)
+        if branch:
+            _checkout_branch(clone_dir, branch)
         return False
 
     clone_dir.mkdir(parents=True, exist_ok=True)
@@ -387,6 +422,8 @@ def clone_remote_registry(
             f"git clone failed (exit {result.returncode}): "
             f"{result.stderr.strip()}"
         )
+    if branch:
+        _checkout_branch(clone_dir, branch)
     return True
 
 
