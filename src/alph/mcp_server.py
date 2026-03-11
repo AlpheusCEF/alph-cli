@@ -23,6 +23,8 @@ All tools follow the Basic Memory pattern:
 - MCP annotations declare read/write intent and idempotency
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -32,10 +34,13 @@ from mcp.types import ToolAnnotations
 from alph.core import (
     create_node,
     extract_frontmatter,
+    is_remote_registry,
     list_nodes,
+    parse_remote_registry,
     show_node,
     validate_node,
 )
+from alph.remote import provider_for_url, resolve_pool_readonly
 
 mcp = fastmcp.FastMCP(
     name="alph",
@@ -50,6 +55,23 @@ mcp = fastmcp.FastMCP(
         "Use tool_validate_pool to confirm pool health after bulk operations."
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# Remote pool resolution
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _resolve_pool(pool_path: str) -> Iterator[Path]:
+    """Resolve pool_path to a local Path, fetching remotely if needed."""
+    if is_remote_registry(pool_path):
+        ref = parse_remote_registry(pool_path)
+        provider = provider_for_url(ref.remote_url)
+        with resolve_pool_readonly(provider, ref.subpath) as local:
+            yield local
+    else:
+        yield Path(pool_path)
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +116,14 @@ def tool_add_node(
             node_status: the status value written to frontmatter (if set)
             existing_creator: set when status is 'duplicate'
     """
+    if is_remote_registry(pool_path):
+        return {
+            "status": "error",
+            "message": (
+                "Write operations on remote pools are not supported in RO mode. "
+                "Use a local pool path or set mode: rw in config."
+            ),
+        }
     result = create_node(
         pool_path=Path(pool_path),
         source="mcp",
@@ -153,7 +183,8 @@ def tool_list_nodes(
     else:
         statuses = {"active"} | set(include_statuses)
 
-    summaries = list_nodes(Path(pool_path), include_statuses=statuses)
+    with _resolve_pool(pool_path) as pool:
+        summaries = list_nodes(pool, include_statuses=statuses)
     return {
         "count": len(summaries),
         "nodes": [
@@ -191,7 +222,8 @@ def tool_show_node(
                 node_id, context, node_type, status, timestamp, source,
                 creator, body, tags, related_to, meta
     """
-    detail = show_node(Path(pool_path), node_id)
+    with _resolve_pool(pool_path) as pool:
+        detail = show_node(pool, node_id)
     if detail is None:
         return {"found": False}
     return {
@@ -229,27 +261,27 @@ def tool_validate_pool(
             error_count: total number of validation errors found
             errors: list of dicts, each with 'file' and 'errors' keys
     """
-    pool = Path(pool_path)
     all_errors: list[dict[str, Any]] = []
 
-    for subdir in ("snapshots", "live"):
-        directory = pool / subdir
-        if not directory.exists():
-            continue
-        for node_file in sorted(directory.glob("*.md")):
-            frontmatter = extract_frontmatter(node_file.read_text())
-            if frontmatter is None:
-                all_errors.append({
-                    "file": node_file.name,
-                    "errors": ["no frontmatter found"],
-                })
+    with _resolve_pool(pool_path) as pool:
+        for subdir in ("snapshots", "live"):
+            directory = pool / subdir
+            if not directory.exists():
                 continue
-            result = validate_node(frontmatter)
-            if not result.valid:
-                all_errors.append({
-                    "file": node_file.name,
-                    "errors": result.errors,
-                })
+            for node_file in sorted(directory.glob("*.md")):
+                frontmatter = extract_frontmatter(node_file.read_text())
+                if frontmatter is None:
+                    all_errors.append({
+                        "file": node_file.name,
+                        "errors": ["no frontmatter found"],
+                    })
+                    continue
+                result = validate_node(frontmatter)
+                if not result.valid:
+                    all_errors.append({
+                        "file": node_file.name,
+                        "errors": result.errors,
+                    })
 
     return {
         "valid": len(all_errors) == 0,
