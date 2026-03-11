@@ -31,13 +31,16 @@ class RegistryEntry:
 
     All metadata (context, name, pools) lives here — there is no separate
     per-registry config.yaml. The ``pool_home`` directory is where pool
-    subdirectories are created.
+    subdirectories are created. For remote registries, ``pool_home`` is a
+    git remote URL (optionally with ``:/subpath`` suffix).
     """
 
     pool_home: str
     context: str = ""
     name: str = ""
     pools: dict[str, object] = field(default_factory=dict)
+    mode: str = ""  # "" = auto (ro for remote, rw for local), "ro", or "rw"
+    clone_path: str = ""  # user-specified local clone dir (rw remote only)
 
 
 @dataclass(frozen=True)
@@ -158,6 +161,75 @@ class ConfigPathSummary:
     exists: bool
     is_global: bool
     registry_ids: list[str]
+
+
+@dataclass(frozen=True)
+class RemoteRegistryRef:
+    """Parsed remote git URL for a registry pool_home."""
+
+    remote_url: str  # e.g. git@github.com:AlpheusCEF/repo.git
+    subpath: str  # e.g. "registry" or "" if root
+    original: str  # raw pool_home string as configured
+
+
+# ---------------------------------------------------------------------------
+# Remote registry detection
+# ---------------------------------------------------------------------------
+
+_REMOTE_PREFIXES = ("git@", "ssh://", "git://", "http://", "https://")
+
+
+def is_remote_registry(pool_home: str) -> bool:
+    """Return True if pool_home is a remote git URL rather than a local path."""
+    if not pool_home:
+        return False
+    return any(pool_home.startswith(p) for p in _REMOTE_PREFIXES)
+
+
+def parse_remote_registry(pool_home: str) -> RemoteRegistryRef:
+    """Parse a remote pool_home into its URL and subpath components.
+
+    Format: ``<git-remote-url>:/<subpath>`` where ``:/subpath`` is optional.
+    For SSH ``git@`` URLs the ``:/`` delimiter separates the URL from the
+    subpath. For protocol URLs (https://, ssh://, git://) the ``.git:/``
+    boundary is used.
+
+    Raises:
+        ValueError: If pool_home is not a remote URL.
+    """
+    if not is_remote_registry(pool_home):
+        raise ValueError(f"not a remote registry URL: {pool_home!r}")
+
+    # Split on ":/" that follows .git — this is the subpath delimiter.
+    # For git@ URLs: git@host:org/repo.git:/subpath
+    # For https:// URLs: https://host/org/repo.git:/subpath
+    if ".git:/" in pool_home:
+        url_part, subpath = pool_home.split(".git:/", 1)
+        remote_url = url_part + ".git"
+        # Strip leading slash from subpath if present
+        subpath = subpath.lstrip("/")
+    else:
+        remote_url = pool_home
+        subpath = ""
+
+    return RemoteRegistryRef(
+        remote_url=remote_url,
+        subpath=subpath,
+        original=pool_home,
+    )
+
+
+def effective_mode(entry: RegistryEntry) -> str:
+    """Return the effective access mode for a registry entry.
+
+    Local registries are always ``"rw"``. Remote registries default to
+    ``"ro"`` unless explicitly configured as ``"rw"``.
+    """
+    if not is_remote_registry(entry.pool_home):
+        return "rw"
+    if entry.mode == "rw":
+        return "rw"
+    return "ro"
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +454,8 @@ def load_config(
                         context=str(v.get("context", "")),
                         name=str(v.get("name", "")),
                         pools=dict(pools_raw) if isinstance(pools_raw, dict) else {},
+                        mode=str(v.get("mode", "")),
+                        clone_path=str(v.get("clone_path", "")),
                     )
         merged.update({k: v for k, v in data.items() if k != "registries"})
 

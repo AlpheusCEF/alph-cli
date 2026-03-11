@@ -8,6 +8,7 @@ import yaml
 from alph.core import (
     AlphConfig,
     RegistryEntry,
+    RemoteRegistryRef,
     check_idempotency,
     collect_registries,
     create_node,
@@ -17,10 +18,12 @@ from alph.core import (
     generate_id,
     init_pool,
     init_registry,
+    is_remote_registry,
     list_config_paths,
     list_nodes,
     load_config,
     load_state,
+    parse_remote_registry,
     resolve_default_pool,
     resolve_pool_name,
     show_node,
@@ -1099,3 +1102,196 @@ def test_default_global_config_text_is_valid_yaml() -> None:
     # let's confirm the overall structure is valid)
     parsed = yaml.safe_load(text)
     assert isinstance(parsed, dict)
+
+
+# ---------------------------------------------------------------------------
+# Remote registry detection and parsing
+# ---------------------------------------------------------------------------
+
+
+def test_is_remote_registry_ssh_git_at() -> None:
+    """SSH git@ URLs are detected as remote."""
+    assert is_remote_registry("git@github.com:AlpheusCEF/repo.git:/registry") is True
+
+
+def test_is_remote_registry_ssh_no_subpath() -> None:
+    """SSH git@ URL without subpath is detected as remote."""
+    assert is_remote_registry("git@github.com:AlpheusCEF/repo.git") is True
+
+
+def test_is_remote_registry_https_with_dotgit() -> None:
+    """HTTPS URL with .git suffix is detected as remote."""
+    assert is_remote_registry("https://github.com/AlpheusCEF/repo.git:/registry") is True
+
+
+def test_is_remote_registry_https_without_dotgit() -> None:
+    """HTTPS URL without .git suffix is detected as remote."""
+    assert is_remote_registry("https://github.com/AlpheusCEF/repo") is True
+
+
+def test_is_remote_registry_ssh_protocol() -> None:
+    """ssh:// URLs are detected as remote."""
+    assert is_remote_registry("ssh://git@github.com/AlpheusCEF/repo.git") is True
+
+
+def test_is_remote_registry_git_protocol() -> None:
+    """git:// URLs are detected as remote."""
+    assert is_remote_registry("git://github.com/AlpheusCEF/repo.git") is True
+
+
+def test_is_remote_registry_local_absolute_path() -> None:
+    """Absolute local paths are not remote."""
+    assert is_remote_registry("/tmp/alph-test/registry") is False
+
+
+def test_is_remote_registry_local_relative_path() -> None:
+    """Relative local paths are not remote."""
+    assert is_remote_registry("./my-registry") is False
+
+
+def test_is_remote_registry_local_home_path() -> None:
+    """Home-relative paths are not remote."""
+    assert is_remote_registry("~/registries/household") is False
+
+
+def test_is_remote_registry_empty_string() -> None:
+    """Empty string is not remote."""
+    assert is_remote_registry("") is False
+
+
+def test_parse_remote_registry_ssh_with_subpath() -> None:
+    """SSH URL with subpath parses correctly and returns RemoteRegistryRef."""
+    ref = parse_remote_registry("git@github.com:AlpheusCEF/repo.git:/registry")
+    assert isinstance(ref, RemoteRegistryRef)
+    assert ref.remote_url == "git@github.com:AlpheusCEF/repo.git"
+    assert ref.subpath == "registry"
+    assert ref.original == "git@github.com:AlpheusCEF/repo.git:/registry"
+
+
+def test_parse_remote_registry_ssh_no_subpath() -> None:
+    """SSH URL without subpath parses with empty subpath."""
+    ref = parse_remote_registry("git@github.com:AlpheusCEF/repo.git")
+    assert ref.remote_url == "git@github.com:AlpheusCEF/repo.git"
+    assert ref.subpath == ""
+
+
+def test_parse_remote_registry_https_with_subpath() -> None:
+    """HTTPS URL with subpath parses correctly."""
+    ref = parse_remote_registry("https://github.com/AlpheusCEF/repo.git:/registry/sub")
+    assert ref.remote_url == "https://github.com/AlpheusCEF/repo.git"
+    assert ref.subpath == "registry/sub"
+
+
+def test_parse_remote_registry_https_no_dotgit_no_subpath() -> None:
+    """HTTPS URL without .git and no subpath."""
+    ref = parse_remote_registry("https://github.com/AlpheusCEF/repo")
+    assert ref.remote_url == "https://github.com/AlpheusCEF/repo"
+    assert ref.subpath == ""
+
+
+def test_parse_remote_registry_raises_on_local_path() -> None:
+    """Parsing a local path raises ValueError."""
+    import pytest
+
+    with pytest.raises(ValueError, match="not a remote"):
+        parse_remote_registry("/tmp/local/path")
+
+
+def test_parse_remote_registry_deep_subpath() -> None:
+    """Subpath with multiple segments parses correctly."""
+    ref = parse_remote_registry("git@gitlab.com:org/repo.git:/a/b/c")
+    assert ref.remote_url == "git@gitlab.com:org/repo.git"
+    assert ref.subpath == "a/b/c"
+
+
+def test_parse_remote_registry_strips_leading_slash_from_subpath() -> None:
+    """The leading slash after :/ is stripped from subpath."""
+    ref = parse_remote_registry("git@github.com:org/repo.git:/registry")
+    assert ref.subpath == "registry"
+    assert not ref.subpath.startswith("/")
+
+
+# ---------------------------------------------------------------------------
+# RegistryEntry mode field
+# ---------------------------------------------------------------------------
+
+
+def test_registry_entry_mode_defaults_to_empty() -> None:
+    """RegistryEntry.mode defaults to empty string (resolved later based on locality)."""
+    entry = RegistryEntry(pool_home="/tmp/test")
+    assert entry.mode == ""
+
+
+def test_registry_entry_mode_ro() -> None:
+    """RegistryEntry accepts mode='ro'."""
+    entry = RegistryEntry(pool_home="git@github.com:org/repo.git", mode="ro")
+    assert entry.mode == "ro"
+
+
+def test_registry_entry_mode_rw() -> None:
+    """RegistryEntry accepts mode='rw'."""
+    entry = RegistryEntry(pool_home="git@github.com:org/repo.git", mode="rw")
+    assert entry.mode == "rw"
+
+
+def test_load_config_reads_mode_from_yaml(tmp_path: Path) -> None:
+    """load_config picks up mode from registry config YAML."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+                "mode": "rw",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].mode == "rw"
+
+
+def test_load_config_mode_defaults_to_empty_when_omitted(tmp_path: Path) -> None:
+    """load_config leaves mode as empty when not specified in YAML."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "local-reg": {
+                "pool_home": str(tmp_path / "home"),
+                "context": "Local test.",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["local-reg"].mode == ""
+
+
+def test_effective_mode_remote_defaults_ro() -> None:
+    """A remote registry with no explicit mode is effectively ro."""
+    from alph.core import effective_mode
+
+    entry = RegistryEntry(pool_home="git@github.com:org/repo.git", mode="")
+    assert effective_mode(entry) == "ro"
+
+
+def test_effective_mode_local_always_rw() -> None:
+    """A local registry is always rw regardless of mode field."""
+    from alph.core import effective_mode
+
+    entry = RegistryEntry(pool_home="/tmp/local", mode="")
+    assert effective_mode(entry) == "rw"
+
+
+def test_effective_mode_remote_explicit_rw() -> None:
+    """A remote registry with explicit mode='rw' returns rw."""
+    from alph.core import effective_mode
+
+    entry = RegistryEntry(pool_home="git@github.com:org/repo.git", mode="rw")
+    assert effective_mode(entry) == "rw"
+
+
+def test_effective_mode_local_ignores_ro() -> None:
+    """A local registry ignores mode='ro' — local is always rw."""
+    from alph.core import effective_mode
+
+    entry = RegistryEntry(pool_home="/tmp/local", mode="ro")
+    assert effective_mode(entry) == "rw"
