@@ -450,6 +450,7 @@ def registry_init(
         console.print("  [dim]set as default registry[/dim]")
     else:
         console.print("  [dim](not set as default — another default registry already exists)[/dim]")
+        console.print(f"  [dim]to make it default: set default_registry: {registry_id} in ~/.config/alph/config.yaml[/dim]")
 
 
 @registry_app.command("list")
