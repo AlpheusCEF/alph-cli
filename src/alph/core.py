@@ -236,6 +236,38 @@ def effective_mode(entry: RegistryEntry) -> str:
     return "ro"
 
 
+def check_git_state(path: Path) -> ValidationResult:
+    """Check that a directory is a healthy git repo for auto_pull/auto_push.
+
+    Checks:
+    - Is a git repository
+    - Has at least one remote configured
+    - Working tree is clean (no uncommitted changes)
+    """
+    errors: list[str] = []
+
+    if not (path / ".git").is_dir():
+        return ValidationResult(valid=False, errors=["not a git repository"])
+
+    # Check for remotes.
+    remotes = subprocess.run(
+        ["git", "-C", str(path), "remote"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if remotes.returncode != 0 or not remotes.stdout.strip():
+        errors.append("no remote configured — auto_pull/auto_push require a remote")
+
+    # Check for uncommitted changes.
+    status = subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if status.returncode == 0 and status.stdout.strip():
+        errors.append("uncommitted changes in working tree")
+
+    return ValidationResult(valid=len(errors) == 0, errors=errors)
+
+
 # ---------------------------------------------------------------------------
 # Schema constants
 # ---------------------------------------------------------------------------
@@ -453,15 +485,22 @@ def load_config(
                 elif isinstance(v, dict):
                     home_val = str(v.get("pool_home") or v.get("home") or config_path.parent)
                     pools_raw = v.get("pools", {})
+                    mode_val = str(v.get("mode", ""))
+                    # Smart defaults: remote RW registries default auto_pull
+                    # and auto_push to True.  Explicit values always win.
+                    _is_rw_remote = (
+                        is_remote_registry(home_val) and mode_val == "rw"
+                    )
+                    _rw_default = _is_rw_remote
                     accumulated_registries[str(k)] = RegistryEntry(
                         pool_home=home_val,
                         context=str(v.get("context", "")),
                         name=str(v.get("name", "")),
                         pools=dict(pools_raw) if isinstance(pools_raw, dict) else {},
-                        mode=str(v.get("mode", "")),
+                        mode=mode_val,
                         clone_path=str(v.get("clone_path", "")),
-                        auto_push=bool(v.get("auto_push", False)),
-                        auto_pull=bool(v.get("auto_pull", False)),
+                        auto_push=bool(v["auto_push"]) if "auto_push" in v else _rw_default,
+                        auto_pull=bool(v["auto_pull"]) if "auto_pull" in v else _rw_default,
                         branch=str(v.get("branch", "")),
                     )
         merged.update({k: v for k, v in data.items() if k != "registries"})

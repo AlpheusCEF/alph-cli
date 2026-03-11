@@ -18,6 +18,7 @@ from rich.table import Table
 from alph.core import (
     AlphConfig,
     RegistryEntry,
+    check_git_state,
     collect_registries,
     create_node,
     effective_mode,
@@ -325,6 +326,9 @@ def _pull_if_requested(
     if not is_remote_registry(pool_str):
         return
     entry = _find_entry_for_pool(pool_str, cfg)
+    # auto_pull already handled in _pool_context — skip to avoid double pull.
+    if entry and entry.auto_pull:
+        return
     mode = effective_mode(entry) if entry else "ro"
     if mode != "rw":
         # RO mode — pull is a no-op (fresh API fetch happens automatically).
@@ -1065,6 +1069,24 @@ def cmd_validate(
         Path(pool_str).name if not is_remote_registry(pool_str)
         else pool_str
     )
+
+    # For local pools with auto_pull or auto_push, check git health.
+    if not is_remote_registry(pool_str):
+        entry = _find_entry_for_pool(pool_str, cfg)
+        if entry and (entry.auto_pull or entry.auto_push):
+            pool_root = Path(pool_str)
+            # Walk up to find the git root (pool may be a subdir of a repo).
+            git_root = pool_root
+            while git_root != git_root.parent:
+                if (git_root / ".git").is_dir():
+                    break
+                git_root = git_root.parent
+            git_result = check_git_state(git_root)
+            if not git_result.valid:
+                for error in git_result.errors:
+                    console.print(f"[yellow]git warning:[/yellow] {error}")
+                errors_found = True
+
     if errors_found:
         raise typer.Exit(code=1)
     if node_count == 0:

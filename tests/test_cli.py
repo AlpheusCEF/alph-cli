@@ -1236,8 +1236,8 @@ def test_auto_pull_triggers_pull_on_rw_read(tmp_path: Path, monkeypatch) -> None
     mock_pull.assert_called_once_with(clone_dir)
 
 
-def test_no_auto_pull_without_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """Without auto_pull, reading from RW clone does not pull."""
+def test_no_auto_pull_when_explicitly_disabled(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """With auto_pull explicitly false, reading from RW clone does not pull."""
     global_dir = tmp_path / "global"
     clone_dir = tmp_path / "clone"
     pool_dir = clone_dir / "data" / "vehicles"
@@ -1253,6 +1253,7 @@ def test_no_auto_pull_without_config(tmp_path: Path, monkeypatch) -> None:  # ty
                 "context": "Read-write.",
                 "mode": "rw",
                 "clone_path": str(clone_dir),
+                "auto_pull": False,
             },
         },
     })

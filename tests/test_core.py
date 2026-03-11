@@ -9,6 +9,7 @@ from alph.core import (
     AlphConfig,
     RegistryEntry,
     RemoteRegistryRef,
+    check_git_state,
     check_idempotency,
     collect_registries,
     create_node,
@@ -1396,14 +1397,63 @@ def test_load_config_reads_auto_push_from_yaml(tmp_path: Path) -> None:
     assert cfg.registries["remote-reg"].auto_push is True
 
 
-def test_load_config_auto_push_defaults_false(tmp_path: Path) -> None:
-    """load_config defaults auto_push to False when omitted."""
+def test_load_config_auto_push_defaults_true_for_rw_remote(tmp_path: Path) -> None:
+    """load_config defaults auto_push to True for remote RW registries when not explicitly set."""
     global_dir = tmp_path / "global"
     _write_config(global_dir / "config.yaml", {
         "registries": {
             "remote-reg": {
                 "pool_home": "git@github.com:org/repo.git:/data",
                 "context": "Remote test.",
+                "mode": "rw",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].auto_push is True
+
+
+def test_load_config_auto_push_defaults_false_for_local(tmp_path: Path) -> None:
+    """load_config defaults auto_push to False for local registries."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "local-reg": {
+                "pool_home": str(tmp_path / "data"),
+                "context": "Local test.",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["local-reg"].auto_push is False
+
+
+def test_load_config_auto_push_defaults_false_for_ro_remote(tmp_path: Path) -> None:
+    """load_config defaults auto_push to False for remote RO registries."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+                "mode": "ro",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].auto_push is False
+
+
+def test_load_config_auto_push_explicit_false_overrides_rw_default(tmp_path: Path) -> None:
+    """Explicitly setting auto_push: false on RW remote overrides the smart default."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+                "mode": "rw",
+                "auto_push": False,
             }
         }
     })
@@ -1444,14 +1494,63 @@ def test_load_config_reads_auto_pull_from_yaml(tmp_path: Path) -> None:
     assert cfg.registries["remote-reg"].auto_pull is True
 
 
-def test_load_config_auto_pull_defaults_false(tmp_path: Path) -> None:
-    """load_config defaults auto_pull to False when omitted."""
+def test_load_config_auto_pull_defaults_true_for_rw_remote(tmp_path: Path) -> None:
+    """load_config defaults auto_pull to True for remote RW registries when not explicitly set."""
     global_dir = tmp_path / "global"
     _write_config(global_dir / "config.yaml", {
         "registries": {
             "remote-reg": {
                 "pool_home": "git@github.com:org/repo.git:/data",
                 "context": "Remote test.",
+                "mode": "rw",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].auto_pull is True
+
+
+def test_load_config_auto_pull_defaults_false_for_local(tmp_path: Path) -> None:
+    """load_config defaults auto_pull to False for local registries."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "local-reg": {
+                "pool_home": str(tmp_path / "data"),
+                "context": "Local test.",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["local-reg"].auto_pull is False
+
+
+def test_load_config_auto_pull_defaults_false_for_ro_remote(tmp_path: Path) -> None:
+    """load_config defaults auto_pull to False for remote RO registries."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+                "mode": "ro",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].auto_pull is False
+
+
+def test_load_config_auto_pull_explicit_false_overrides_rw_default(tmp_path: Path) -> None:
+    """Explicitly setting auto_pull: false on RW remote overrides the smart default."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+                "mode": "rw",
+                "auto_pull": False,
             }
         }
     })
@@ -1488,3 +1587,65 @@ def test_load_config_branch_defaults_empty(tmp_path: Path) -> None:
     })
     cfg = load_config(global_config_dir=global_dir)
     assert cfg.registries["remote-reg"].branch == ""
+
+
+# ---------------------------------------------------------------------------
+# check_git_state
+# ---------------------------------------------------------------------------
+
+
+def test_check_git_state_not_a_git_repo(tmp_path: Path) -> None:
+    """check_git_state returns error when path is not a git repo."""
+    result = check_git_state(tmp_path)
+    assert not result.valid
+    assert any("not a git repository" in e for e in result.errors)
+
+
+def test_check_git_state_clean_with_remote(tmp_path: Path) -> None:
+    """check_git_state returns valid for a clean repo with a remote."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "--allow-empty", "-m", "init"],
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", "git@github.com:test/test.git"],
+        capture_output=True,
+    )
+    result = check_git_state(repo)
+    assert result.valid, f"Expected valid but got errors: {result.errors}"
+
+
+def test_check_git_state_no_remote(tmp_path: Path) -> None:
+    """check_git_state returns error when no remote is configured."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "--allow-empty", "-m", "init"],
+        capture_output=True,
+    )
+    result = check_git_state(repo)
+    assert not result.valid
+    assert any("no remote" in e for e in result.errors)
+
+
+def test_check_git_state_dirty_working_tree(tmp_path: Path) -> None:
+    """check_git_state returns error when working tree has uncommitted changes."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "--allow-empty", "-m", "init"],
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", "git@github.com:test/test.git"],
+        capture_output=True,
+    )
+    (repo / "dirty.txt").write_text("uncommitted")
+    result = check_git_state(repo)
+    assert not result.valid
+    assert any("uncommitted changes" in e for e in result.errors)
