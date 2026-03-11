@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from alph.core import (
+    RESERVED_NAMES,
     AlphConfig,
     RegistryEntry,
     RemoteRegistryRef,
@@ -1649,3 +1650,46 @@ def test_check_git_state_dirty_working_tree(tmp_path: Path) -> None:
     result = check_git_state(repo)
     assert not result.valid
     assert any("uncommitted changes" in e for e in result.errors)
+
+
+# ---------------------------------------------------------------------------
+# Reserved names
+# ---------------------------------------------------------------------------
+
+
+def test_reserved_names_includes_all() -> None:
+    """'all' is in the reserved names set."""
+    assert "all" in RESERVED_NAMES
+
+
+def test_init_registry_rejects_reserved_name(tmp_path: Path) -> None:
+    """init_registry rejects reserved IDs like 'all'."""
+    result = init_registry(
+        pool_home=tmp_path / "reg",
+        registry_id="all",
+        context="Should fail.",
+        global_config_dir=tmp_path / "global",
+    )
+    assert not result.valid
+    assert any("reserved" in e for e in result.errors)
+
+
+def test_init_pool_rejects_reserved_name(tmp_path: Path) -> None:
+    """init_pool rejects reserved pool names like 'all'."""
+    global_dir = tmp_path / "global"
+    # Create a registry first.
+    init_registry(
+        pool_home=tmp_path / "reg",
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    result = init_pool(
+        registry_id="test-reg",
+        name="all",
+        context="Should fail.",
+        cwd=tmp_path / "reg",
+        global_config_dir=global_dir,
+    )
+    assert not result.valid
+    assert any("reserved" in e for e in result.errors)

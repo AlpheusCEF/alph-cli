@@ -1276,3 +1276,76 @@ def test_global_registry_option_unknown_errors(tmp_path: Path, monkeypatch) -> N
     ])
     assert result.exit_code != 0
     assert "not found" in result.output
+
+
+# ---------------------------------------------------------------------------
+# alph registry/pool default to list
+# ---------------------------------------------------------------------------
+
+
+def test_registry_no_subcommand_defaults_to_list(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry (no subcommand) shows the registry list."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "test-reg": {
+                "pool_home": str(tmp_path / "data"),
+                "context": "Test.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["registry"])
+    assert result.exit_code == 0
+    assert "test-reg" in result.output
+
+
+def test_pool_no_subcommand_defaults_to_list(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph pool (no subcommand) shows the pool list."""
+    global_dir = tmp_path / "global"
+    pool_dir = tmp_path / "data" / "vehicles"
+    (pool_dir / "snapshots").mkdir(parents=True)
+    (pool_dir / "live").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "default_registry": "test-reg",
+        "registries": {
+            "test-reg": {
+                "pool_home": str(tmp_path / "data"),
+                "context": "Test.",
+                "pools": {"vehicles": {"context": "Cars."}},
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["pool"])
+    assert result.exit_code == 0
+    assert "vehicles" in result.output
+
+
+# ---------------------------------------------------------------------------
+# alph registry check all
+# ---------------------------------------------------------------------------
+
+
+def test_registry_check_all_checks_every_registry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry check all checks every known registry."""
+    global_dir = tmp_path / "global"
+    (tmp_path / "local1").mkdir()
+    (tmp_path / "local2").mkdir()
+    _write_global_config(global_dir, {
+        "registries": {
+            "reg-a": {
+                "pool_home": str(tmp_path / "local1"),
+                "context": "A.",
+            },
+            "reg-b": {
+                "pool_home": str(tmp_path / "local2"),
+                "context": "B.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["registry", "check", "all"])
+    assert result.exit_code == 0
+    assert "reg-a" in result.output
+    assert "reg-b" in result.output

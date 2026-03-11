@@ -47,8 +47,8 @@ from alph.remote import (
 
 _help_settings = {"help_option_names": ["-h", "--help"]}
 app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.", context_settings=_help_settings)
-registry_app = typer.Typer(help="Registry commands.", context_settings=_help_settings)
-pool_app = typer.Typer(help="Pool commands.", context_settings=_help_settings)
+registry_app = typer.Typer(help="Registry commands.", invoke_without_command=True, context_settings=_help_settings)
+pool_app = typer.Typer(help="Pool commands.", invoke_without_command=True, context_settings=_help_settings)
 config_app = typer.Typer(help="Config file commands.", context_settings=_help_settings)
 app.add_typer(registry_app, name="registry")
 app.add_typer(pool_app, name="pool")
@@ -383,6 +383,13 @@ def _require_creator(creator_flag: str | None, cfg: AlphConfig) -> str:
     raise typer.Exit(code=1)
 
 
+@registry_app.callback()
+def _registry_default(ctx: typer.Context) -> None:
+    """Registry commands. Defaults to 'list' when no subcommand is given."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(registry_list, cwd=None, verbose=False)
+
+
 @registry_app.command("init")
 def registry_init(
     pool_home: Path = typer.Option(..., "--pool-home", help="Directory where pool subdirectories will be created. The registry definition is written into the global config, not here."),
@@ -437,7 +444,7 @@ def registry_list(
         console.print("no registries found.")
         console.print("  run [bold]alph registry init[/bold] to create one.")
         return
-    table = Table(show_header=True, header_style="bold")
+    table = Table(show_header=True, header_style="bold", row_styles=["", "dim"])
     table.add_column("ID", style="dim", width=20)
     table.add_column("name", width=20)
     table.add_column("mode", width=6)
@@ -450,6 +457,58 @@ def registry_list(
             s.registry_id, s.name, mode, s.context, str(s.home_path),
         )
     console.print(table)
+
+
+def _check_single_registry(reg_id: str, cfg: AlphConfig) -> None:
+    """Check reachability of a single registry. Raises typer.Exit on failure."""
+    import subprocess as _subprocess
+
+    entry = cfg.registries[reg_id]
+
+    if not is_remote_registry(entry.pool_home):
+        pool_home_path = Path(entry.pool_home)
+        if pool_home_path.exists():
+            console.print(
+                f"[green]ok:[/green] {reg_id} is a local registry "
+                f"at {entry.pool_home}"
+            )
+        else:
+            console.print(
+                f"[red]error:[/red] {reg_id} local path does not "
+                f"exist: {entry.pool_home}"
+            )
+            raise typer.Exit(code=1)
+        return
+
+    ref = parse_remote_registry(entry.pool_home)
+    try:
+        result = _subprocess.run(
+            ["git", "ls-remote", "--exit-code", ref.remote_url],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            console.print(
+                f"[green]ok:[/green] {reg_id} remote is reachable "
+                f"({ref.remote_url})"
+            )
+        else:
+            console.print(
+                f"[red]error:[/red] {reg_id} remote not reachable: "
+                f"{result.stderr.strip()}"
+            )
+            raise typer.Exit(code=1)
+    except _subprocess.TimeoutExpired:
+        console.print(
+            f"[red]error:[/red] {reg_id} remote timed out "
+            f"({ref.remote_url})"
+        )
+        raise typer.Exit(code=1) from None
+    except FileNotFoundError:
+        console.print(
+            "[red]error:[/red] git not found. "
+            "Install git to check remote registries."
+        )
+        raise typer.Exit(code=1) from None
 
 
 @registry_app.command("check")
@@ -474,6 +533,20 @@ def registry_check(
 
     from alph.core import find_registry_config
 
+    if registry_id == "all":
+        if not cfg.registries:
+            console.print("no registries found.")
+            return
+        any_failed = False
+        for rid in cfg.registries:
+            try:
+                _check_single_registry(rid, cfg)
+            except typer.Exit:
+                any_failed = True
+        if any_failed:
+            raise typer.Exit(code=1)
+        return
+
     found = find_registry_config(registry_id, cfg=cfg)
     if found is None:
         known = ", ".join(cfg.registries.keys()) or "(none)"
@@ -484,54 +557,7 @@ def registry_check(
         raise typer.Exit(code=1)
 
     reg_id, _ = found
-    entry = cfg.registries[reg_id]
-
-    if not is_remote_registry(entry.pool_home):
-        pool_home_path = Path(entry.pool_home)
-        if pool_home_path.exists():
-            console.print(
-                f"[green]ok:[/green] {reg_id} is a local registry "
-                f"at {entry.pool_home}"
-            )
-        else:
-            console.print(
-                f"[red]error:[/red] {reg_id} local path does not "
-                f"exist: {entry.pool_home}"
-            )
-            raise typer.Exit(code=1)
-        return
-
-    ref = parse_remote_registry(entry.pool_home)
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["git", "ls-remote", "--exit-code", ref.remote_url],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode == 0:
-            console.print(
-                f"[green]ok:[/green] {reg_id} remote is reachable "
-                f"({ref.remote_url})"
-            )
-        else:
-            console.print(
-                f"[red]error:[/red] {reg_id} remote not reachable: "
-                f"{result.stderr.strip()}"
-            )
-            raise typer.Exit(code=1)
-    except subprocess.TimeoutExpired:
-        console.print(
-            f"[red]error:[/red] {reg_id} remote timed out "
-            f"({ref.remote_url})"
-        )
-        raise typer.Exit(code=1) from None
-    except FileNotFoundError:
-        console.print(
-            "[red]error:[/red] git not found. "
-            "Install git to check remote registries."
-        )
-        raise typer.Exit(code=1) from None
+    _check_single_registry(reg_id, cfg)
 
 
 @registry_app.command("clone")
@@ -732,6 +758,13 @@ def registry_status(
     console.print("\n".join(lines))
 
 
+@pool_app.callback()
+def _pool_default(ctx: typer.Context) -> None:
+    """Pool commands. Defaults to 'list' when no subcommand is given."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(pool_list, registry=None, cwd=None, verbose=False)
+
+
 @pool_app.command("init")
 def pool_init(
     registry: str | None = typer.Option(None, "--registry", help="Registry ID or name. Defaults to default_registry from config."),
@@ -829,7 +862,7 @@ def pool_list(
         console.print("  run [bold]alph pool init[/bold] to create one.")
         return
 
-    table = Table(show_header=True, header_style="bold")
+    table = Table(show_header=True, header_style="bold", row_styles=["", "dim"])
     table.add_column("registry", width=20)
     table.add_column("name", width=20)
     table.add_column("type", width=8)
@@ -980,7 +1013,7 @@ def cmd_list(
     if not summaries:
         console.print("no nodes found.")
         return
-    table = Table(show_header=True, header_style="bold", expand=False)
+    table = Table(show_header=True, header_style="bold", row_styles=["", "dim"], expand=False)
     table.add_column("ID", style="dim", width=14)
     table.add_column("type", width=7)
     table.add_column("status", width=10)
@@ -1112,7 +1145,7 @@ def config_list(
     _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
     summaries = list_config_paths(global_config_dir=_global_config_dir(), cwd=resolved_cwd)
-    table = Table(show_header=True, header_style="bold")
+    table = Table(show_header=True, header_style="bold", row_styles=["", "dim"])
     table.add_column("config file", min_width=40)
     table.add_column("status", width=8)
     table.add_column("type", width=8)

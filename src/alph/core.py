@@ -13,6 +13,12 @@ import yaml
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Reserved names — cannot be used as registry IDs or pool names
+# ---------------------------------------------------------------------------
+
+RESERVED_NAMES: frozenset[str] = frozenset({"all"})
+
+# ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
 
@@ -848,6 +854,13 @@ def init_registry(
         RegistryResult with config_path pointing to the global config,
         validation outcome, and set_as_default.
     """
+    if registry_id in RESERVED_NAMES:
+        return RegistryResult(
+            valid=False,
+            errors=[f"'{registry_id}' is a reserved name and cannot be used as a registry ID"],
+            config_path=global_config_dir / "config.yaml",
+            set_as_default=False,
+        )
     pool_home.mkdir(parents=True, exist_ok=True)
     global_config_dir.mkdir(parents=True, exist_ok=True)
     global_config_path = global_config_dir / "config.yaml"
@@ -922,6 +935,13 @@ def init_pool(
         Returns invalid result (with errors) if the registry is not found and
         bootstrap is False.
     """
+    if name in RESERVED_NAMES:
+        return PoolResult(
+            valid=False,
+            errors=[f"'{name}' is a reserved name and cannot be used as a pool name"],
+            pool_path=Path(),
+            config_path=global_config_dir / "config.yaml",
+        )
     cfg = load_config(global_config_dir=global_config_dir, cwd=cwd)
     found = find_registry_config(registry_id, cfg=cfg)
 
