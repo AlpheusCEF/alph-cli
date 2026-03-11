@@ -92,7 +92,7 @@ def _main(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging.", is_eager=False),
     version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True, help="Show version and exit."),
     registry: str | None = typer.Option(
-        None, "--registry",
+        None, "--registry", "--reg", "-r",
         help="Override registry: ID, name, or remote git URL. "
              "Scopes pool resolution to this registry for this invocation.",
     ),
@@ -775,7 +775,7 @@ def _pool_default(ctx: typer.Context) -> None:
 
 @pool_app.command("init")
 def pool_init(
-    registry: str | None = typer.Option(None, "--registry", help="Registry ID or name. Defaults to default_registry from config."),
+    registry: str | None = typer.Option(None, "--registry", "--reg", "-r", help="Registry ID or name. Defaults to default_registry from config."),
     name: str = typer.Option(..., "--name", help="Pool name (machine identifier)."),
     context: str = typer.Option(..., "--context", "-c", help="Human/LLM-readable description."),
     pool_type: str = typer.Option("subdir", "--type", help="Pool type: 'subdir' (pool is a subdirectory of the registry home) or 'repo' (standalone git repository)."),
@@ -838,7 +838,7 @@ def pool_init(
 
 @pool_app.command("list")
 def pool_list(
-    registry: str | None = typer.Option(None, "--registry", help="Registry ID or name. Defaults to default_registry from config."),
+    registry: str | None = typer.Option(None, "--registry", "--reg", "-r", help="Registry ID or name. Defaults to default_registry from config."),
     cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for config lookup."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
@@ -890,7 +890,7 @@ def pool_list(
 @app.command("add")
 def cmd_add(
     context: str = typer.Option(..., "-c", "--context", help="Context description for this node."),
-    pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config."),
     creator: str | None = typer.Option(None, "--creator", help="Creator email address. Defaults to creator from config."),
     node_type: str = typer.Option("snapshot", "--type", help="'snapshot' (or 'snap') or 'live'."),
     content: str = typer.Option("", "--content", help="Optional Markdown body."),
@@ -926,7 +926,7 @@ def cmd_add(
 
 @app.command("list")
 def cmd_list(
-    pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config."),
     status: list[str] = typer.Option(
         [],
         "-s",
@@ -1038,7 +1038,7 @@ def cmd_list(
 @app.command("show")
 def cmd_show(
     node_id: str = typer.Argument(..., help="Node ID to display."),
-    pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config."),
     pull: bool = typer.Option(False, "--pull", help="Pull latest changes before showing (RW clones only)."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
@@ -1068,7 +1068,7 @@ def cmd_show(
 
 @app.command("validate")
 def cmd_validate(
-    pool: str | None = typer.Option(None, "--pool", help="Pool path or name. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config."),
     pull: bool = typer.Option(False, "--pull", help="Pull latest changes before validating (RW clones only)."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
