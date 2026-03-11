@@ -1130,6 +1130,45 @@ def test_global_registry_option_with_id(tmp_path: Path, monkeypatch) -> None:  #
     assert result.exit_code == 0
 
 
+def test_registry_override_ro_when_rw_shares_url(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """--registry <ro-id> uses RO API path even when an RW registry shares the URL."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "ro-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Read-only.",
+                "mode": "ro",
+                "branch": "seeded",
+            },
+            "rw-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Read-write.",
+                "mode": "rw",
+                "clone_path": str(tmp_path / "clone"),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_prov = _mock_provider()
+    with patch("alph.cli.provider_for_url", return_value=mock_prov), \
+            patch("alph.cli.resolve_pool_readonly") as mock_resolve:
+        pool_dir = tmp_path / "pool"
+        (pool_dir / "snapshots").mkdir(parents=True)
+        (pool_dir / "live").mkdir(parents=True)
+        mock_resolve.return_value.__enter__ = lambda s: pool_dir
+        mock_resolve.return_value.__exit__ = lambda s, *a: None
+        result = runner.invoke(app, [
+            "--registry", "ro-reg",
+            "list", "--pool", "vehicles",
+        ])
+    assert result.exit_code == 0, f"Expected success but got: {result.output}"
+    # Must use resolve_pool_readonly (RO API), not clone_remote_registry (RW).
+    mock_resolve.assert_called_once()
+    call_kwargs = mock_resolve.call_args.kwargs
+    assert call_kwargs.get("ref") == "seeded"
+
+
 def test_global_registry_option_unknown_errors(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """alph --registry <unknown> list errors."""
     global_dir = tmp_path / "global"

@@ -220,9 +220,21 @@ def _require_pool(pool_flag: str | None, cfg: AlphConfig) -> str:
 def _find_entry_for_pool(pool_str: str, cfg: AlphConfig) -> RegistryEntry | None:
     """Find the RegistryEntry that owns a pool, if any.
 
-    When multiple remote registries share the same URL, prefers the RW
-    entry so that write operations succeed when an RW config exists.
+    When ``--registry`` was used, returns that specific registry's entry
+    so the user's intent is honoured even when multiple registries share
+    the same URL.  Otherwise, when multiple remote registries share the
+    same URL, prefers the RW entry so write operations succeed.
     """
+    # Honour explicit --registry override.
+    reg_override = _registry_override
+    if reg_override and not is_remote_registry(reg_override):
+        from alph.core import find_registry_config
+
+        found = find_registry_config(reg_override, cfg=cfg)
+        if found is not None:
+            reg_id, _ = found
+            return cfg.registries[reg_id]
+
     if is_remote_registry(pool_str):
         ref_pool = parse_remote_registry(pool_str)
         match: RegistryEntry | None = None
