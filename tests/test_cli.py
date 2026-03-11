@@ -1458,3 +1458,18 @@ def test_config_show_all_displays_merged_config(tmp_path: Path, monkeypatch) -> 
     assert "default_registry" in result.output
     assert "auto_push" in result.output
     assert "auto_pull" in result.output
+
+
+# ---------------------------------------------------------------------------
+# alph examples
+# ---------------------------------------------------------------------------
+
+
+def test_examples_command_runs_and_shows_content() -> None:
+    """alph examples prints structured usage walkthroughs."""
+    result = runner.invoke(app, ["examples"])
+    assert result.exit_code == 0
+    assert "Getting started" in result.output
+    assert "registry init" in result.output
+    assert "pool init" in result.output
+    assert "alph add" in result.output

@@ -47,7 +47,7 @@ from alph.remote import (
 )
 
 _help_settings = {"help_option_names": ["-h", "--help"]}
-app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.", context_settings=_help_settings)
+app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.\n\nRun 'alph examples' for structured usage walkthroughs.", context_settings=_help_settings)
 registry_app = typer.Typer(help="Registry commands.", invoke_without_command=True, context_settings=_help_settings)
 pool_app = typer.Typer(help="Pool commands.", invoke_without_command=True, context_settings=_help_settings)
 config_app = typer.Typer(help="Config file commands.", invoke_without_command=True, context_settings=_help_settings)
@@ -1345,6 +1345,121 @@ def cmd_defaults(
 
     console.print()
     console.print("  run [bold]alph config list[/bold] to see which config files are active.")
+
+
+@app.command("examples", hidden=True)
+def cmd_examples() -> None:
+    """Show structured usage examples for common workflows."""
+    console.print(
+        """[bold]AlpheusCEF — Usage Examples[/bold]
+
+[bold underline]1. Getting started: local registry[/bold underline]
+
+  [dim]# Create a registry rooted at ~/context[/dim]
+  alph registry init --pool-home ~/context --id personal -c "Personal context"
+
+  [dim]# Create a pool for a project[/dim]
+  alph pool init --name kitchen-remodel -c "Planning and decisions for kitchen remodel"
+
+  [dim]# Add a snapshot node capturing a decision[/dim]
+  alph add -c "Decided on quartz countertops after comparing durability and cost" \\
+      --content "Granite was $200/sqft more and the installer said quartz is \\
+  easier to maintain. Went with Caesarstone color 5143."
+
+  [dim]# List nodes in the pool[/dim]
+  alph list
+
+  [dim]# Show full content of a node[/dim]
+  alph show a1b2c3d4e5f6
+
+[bold underline]2. Multiple pools, one registry[/bold underline]
+
+  [dim]# All pools live as subdirectories of the registry home[/dim]
+  alph pool init --name vehicles -c "Maintenance for the family cars"
+  alph pool init --name standards -c "Cross-cutting household standards"
+
+  [dim]# Add a node to a specific pool[/dim]
+  alph add -p vehicles -c "Oil change on Highlander at 45k miles"
+  alph add -p standards -c "All major purchases require two quotes minimum"
+
+  [dim]# List pools to see what exists[/dim]
+  alph pool list
+
+[bold underline]3. Remote registry (read-only)[/bold underline]
+
+  [dim]# Point at a shared team repo — no clone needed for reads[/dim]
+  alph registry init \\
+      --pool-home git@github.com:org/shared-context.git:/registry \\
+      --id team-shared -c "Shared engineering context" \\
+      --mode ro --branch main
+
+  [dim]# List nodes from the remote pool[/dim]
+  alph list -r team-shared -p standards
+
+  [dim]# Check that the remote is reachable[/dim]
+  alph registry check team-shared
+
+[bold underline]4. Remote registry (read-write)[/bold underline]
+
+  [dim]# Register a remote repo with a local clone for writes[/dim]
+  alph registry init \\
+      --pool-home git@github.com:myorg/project-context.git \\
+      --id project -c "Project decisions and context" \\
+      --mode rw --clone-path ~/git/project-context --branch main
+
+  [dim]# Clone it locally[/dim]
+  alph registry clone project
+
+  [dim]# Now you can add nodes — they go into the local clone[/dim]
+  alph add -r project -p decisions -c "Chose gRPC over REST for internal APIs"
+
+  [dim]# Pull latest from remote[/dim]
+  alph registry pull project
+
+[bold underline]5. Inspecting your setup[/bold underline]
+
+  [dim]# What registries do I have?[/dim]
+  alph registry list
+
+  [dim]# What are my current defaults?[/dim]
+  alph defaults
+
+  [dim]# Show fully merged config with all defaults resolved[/dim]
+  alph config show-all
+
+  [dim]# Check config files for typos or unknown keys[/dim]
+  alph config check
+
+  [dim]# Show a specific config file[/dim]
+  alph config show ~/.config/alph/config.yaml
+
+[bold underline]6. Filtering and output formats[/bold underline]
+
+  [dim]# Only archived nodes[/dim]
+  alph list -s archived
+
+  [dim]# All statuses[/dim]
+  alph list -s all
+
+  [dim]# JSON output for scripting[/dim]
+  alph list -o json
+
+  [dim]# CSV for spreadsheets[/dim]
+  alph list -o csv > nodes.csv
+
+[bold underline]7. Short aliases[/bold underline]
+
+  [dim]# These are equivalent:[/dim]
+  alph add -c "..."        [dim]#  alph a -c "..."[/dim]
+  alph list                 [dim]#  alph l[/dim]
+  alph show <id>            [dim]#  alph s <id>[/dim]
+  alph validate             [dim]#  alph v[/dim]
+  alph registry list        [dim]#  alph reg list  or just  alph reg[/dim]
+  alph --registry X list    [dim]#  alph -r X list  or  alph --reg X list[/dim]
+  alph list --pool Y        [dim]#  alph list -p Y[/dim]
+
+[dim]See also: man alph[/dim]"""
+    )
 
 
 # Short command aliases (hidden from --help)

@@ -1,0 +1,406 @@
+.\" Man page for alph(1) — Alpheus Context Engine Framework CLI
+.TH ALPH 1 "2026-03-11" "alph 0.1.24" "Alpheus Context Engine Framework"
+.SH NAME
+alph \- git-backed context management for LLMs
+.SH SYNOPSIS
+.B alph
+.RI [ OPTIONS ]
+.I COMMAND
+.RI [ ARGS ]
+.SH DESCRIPTION
+.B alph
+is the CLI for the Alpheus Context Engine Framework (AlpheusCEF).
+It manages structured context nodes organized into pools within registries,
+all backed by git for versioning, diffs, and collaboration.
+.PP
+Context flows through a funnel: registry \(-> pool \(-> node. Each level
+carries a
+.B context
+field that orients humans and LLMs to the purpose of that entity.
+.PP
+Nodes are Markdown files with YAML frontmatter stored in
+.B snapshots/
+(point-in-time captures) or
+.B live/
+(pointers to external resources that resolve on demand).
+.SH GLOBAL OPTIONS
+.TP
+.BR \-v ", " \-\-verbose
+Enable debug logging.
+.TP
+.B \-\-version
+Show version and exit.
+.TP
+.BR \-r ", " \-\-reg ", " \-\-registry " " \fITEXT\fR
+Override registry: ID, name, or remote git URL.
+Scopes pool resolution to this registry for one invocation.
+.TP
+.BI \-\-branch " TEXT"
+Override git branch for remote operations.
+Useful with ad-hoc \fB\-\-registry\fR URLs that have no config entry.
+.TP
+.BR \-h ", " \-\-help
+Show help and exit.
+.SH COMMANDS
+.SS "Node commands"
+.TP
+.B alph add
+Create a context node in a pool.
+.RS
+.TP
+.BR \-c ", " \-\-context " " \fITEXT\fR
+Context description for this node. Required.
+.TP
+.BR \-p ", " \-\-pool " " \fITEXT\fR
+Pool path or name. Defaults to \fBdefault_pool\fR from config.
+.TP
+.BI \-\-creator " TEXT"
+Creator email address. Defaults to \fBcreator\fR from config.
+.TP
+.BI \-\-type " TEXT"
+\fBsnapshot\fR (or \fBsnap\fR) or \fBlive\fR. Default: snapshot.
+.TP
+.BI \-\-content " TEXT"
+Optional Markdown body.
+.TP
+.BI \-\-status " TEXT"
+\fBactive\fR (default), \fBarchived\fR, or \fBsuppressed\fR.
+.RE
+.TP
+.B alph list
+List nodes in a pool with frontmatter summary.
+.RS
+.TP
+.BR \-p ", " \-\-pool " " \fITEXT\fR
+Pool path or name.
+.TP
+.BR \-s ", " \-\-status " " \fITEXT\fR
+Filter by status: \fBarchived\fR, \fBsuppressed\fR, \fBall\fR,
+or comma-separated (e.g. \fBarchived,suppressed\fR).
+Default: active only.
+.TP
+.BR \-o ", " \-\-output " " \fITEXT\fR
+Output format: \fBconsole\fR (default), \fBjson\fR, \fByaml\fR, \fBcsv\fR.
+.TP
+.B \-\-pull
+Pull latest changes before listing (RW clones only).
+.RE
+.TP
+.B alph show \fINODE_ID\fR
+Display full node content formatted for terminal.
+.RS
+.TP
+.BR \-p ", " \-\-pool " " \fITEXT\fR
+Pool path or name.
+.TP
+.B \-\-pull
+Pull latest changes before showing (RW clones only).
+.RE
+.TP
+.B alph validate
+Check all nodes in a pool against schema.
+.RS
+.TP
+.BR \-p ", " \-\-pool " " \fITEXT\fR
+Pool path or name.
+.TP
+.B \-\-pull
+Pull latest changes before validating (RW clones only).
+.RE
+.TP
+.B alph defaults
+Show the currently resolved defaults (registry, pool, creator).
+.SS "Registry commands (alph registry | alph reg)"
+.PP
+When no subcommand is given, defaults to \fBregistry list\fR.
+.TP
+.B alph registry init
+Create a registry and register it in the global config.
+.RS
+.TP
+.BI \-\-pool\-home " TEXT"
+Directory or git remote URL. Required.
+.TP
+.BI \-\-id " TEXT"
+Machine identifier for the registry. Required.
+.TP
+.BR \-c ", " \-\-context " " \fITEXT\fR
+Human/LLM-readable description. Required.
+.TP
+.BI \-\-name " TEXT"
+Optional human-readable name.
+.TP
+.BI \-\-mode " TEXT"
+Access mode: \fBro\fR or \fBrw\fR.
+Auto-detected if omitted (ro for remote, rw for local).
+.TP
+.BI \-\-clone\-path " TEXT"
+Local directory for RW clone (remote registries only).
+.TP
+.BI \-\-branch " TEXT"
+Git branch for RO reads and RW clone checkout.
+.TP
+.BR \-\-auto\-push " | " \-\-no\-auto\-push
+Push after commit. Default: true for RW remote, false for local.
+.TP
+.BR \-\-auto\-pull " | " \-\-no\-auto\-pull
+Pull before read. Default: true for RW remote, false for local.
+.RE
+.TP
+.B alph registry list
+List all registries known from the config file tree.
+.TP
+.B alph registry check \fR[\fIREGISTRY_ID\fR]
+Verify a registry is reachable.
+Pass \fBall\fR to check every registry.
+Defaults to \fBdefault_registry\fR when no argument is given.
+.TP
+.B alph registry clone \fR[\fIREGISTRY_ID\fR]
+Clone a remote registry locally for RW access.
+Defaults to \fBdefault_registry\fR when no argument is given.
+.RS
+.TP
+.BI \-\-clone\-path " PATH"
+Local directory to clone into. Default: \fI~/.cache/alph/clones/<hash>/\fR.
+.RE
+.TP
+.B alph registry pull \fR[\fIREGISTRY_ID\fR]
+Pull latest changes for a cloned remote registry (git pull \-\-ff\-only).
+Defaults to \fBdefault_registry\fR when no argument is given.
+.TP
+.B alph registry status \fR[\fIREGISTRY_ID\fR]
+Show registry status: mode, clone state, branch, auto_push, and path details.
+Defaults to \fBdefault_registry\fR when no argument is given.
+.SS "Pool commands (alph pool)"
+.PP
+When no subcommand is given, defaults to \fBpool list\fR.
+.TP
+.B alph pool init
+Create a pool inside a registry.
+.RS
+.TP
+.BR \-r ", " \-\-reg ", " \-\-registry " " \fITEXT\fR
+Registry ID or name. Defaults to \fBdefault_registry\fR.
+.TP
+.BI \-\-name " TEXT"
+Pool name (machine identifier, used as directory name). Required.
+.TP
+.BR \-c ", " \-\-context " " \fITEXT\fR
+Human/LLM-readable description. Required.
+.TP
+.BI \-\-type " TEXT"
+Pool type: \fBsubdir\fR (default) or \fBrepo\fR.
+.RE
+.TP
+.B alph pool list
+List pools in a registry (configured and discovered on disk).
+.SS "Config commands (alph config)"
+.PP
+When no subcommand is given, defaults to \fBconfig list\fR.
+.TP
+.B alph config list
+List all config files in the discovery tree, showing which exist
+and which registries each declares.
+.TP
+.B alph config show \fIPATH\fR
+Display a config file with syntax highlighting.
+.TP
+.B alph config show\-all
+Display the fully merged config with all default values filled in.
+Shows the resolved configuration as alph sees it.
+.TP
+.B alph config check
+Check all config files for unknown or legacy keys.
+Reports typos like \fBclone_dir\fR instead of \fBclone_path\fR.
+.SH CONFIGURATION
+.B alph
+loads configuration from a cascade of YAML files. Priority (highest wins):
+CLI overrides > cwd-nearest config > ... > global config > defaults.
+.TP
+.I ~/.config/alph/config.yaml
+Global config (base layer). Created by \fBalph registry init\fR.
+.TP
+.I config.yaml
+Local config files found walking up from the current directory.
+.PP
+Top-level config keys:
+.RS
+.TP
+.B creator
+Default creator email for new nodes.
+.TP
+.B auto_commit
+Auto-commit after node creation (default: false).
+.TP
+.B default_registry
+Registry ID used when no \fB\-\-registry\fR flag is given.
+.TP
+.B default_pool
+Pool name used when no \fB\-\-pool\fR flag is given.
+.TP
+.B register_subdir_pools
+When true, \fBpool init\fR writes pool entries to the config file
+in addition to the pool-local \fI.alph.yaml\fR dotfile.
+Default: false (subdir pools are discovered from the filesystem).
+.TP
+.B registries
+Map of registry IDs to registry entries.
+.RE
+.PP
+Registry entry keys:
+.RS
+.TP
+.B pool_home
+Local path or git remote URL (e.g. \fIgit@github.com:org/repo.git:/subpath\fR).
+.TP
+.B context
+Human/LLM-readable description.
+.TP
+.B name
+Optional human-readable name.
+.TP
+.B mode
+\fBro\fR (read-only) or \fBrw\fR (read-write). Auto-detected for remote URLs.
+.TP
+.B clone_path
+Local directory for RW clone (remote registries only).
+.TP
+.B branch
+Git branch for RO reads and RW clone checkout.
+.TP
+.B auto_push
+Push after commit (default: true for RW remote).
+.TP
+.B auto_pull
+Pull before read (default: true for RW remote).
+.TP
+.B pools
+Map of pool names to pool metadata (\fBcontext\fR, \fBtype\fR).
+.RE
+.SH POOL STRUCTURE
+Each pool directory contains:
+.RS
+.TP
+.I snapshots/
+Point-in-time context nodes (Markdown with YAML frontmatter).
+.TP
+.I live/
+Live nodes that point to external resources.
+.TP
+.I .alph.yaml
+Pool-local metadata: context, creator, and creation date.
+Created by \fBpool init\fR.
+.RE
+.SH NODE SCHEMA
+Node frontmatter fields:
+.RS
+.TP
+.B schema_version
+Schema version (currently 1).
+.TP
+.B id
+Deterministic identifier: sha256(source + context)[:12].
+.TP
+.B timestamp
+ISO 8601 creation timestamp.
+.TP
+.B source
+Origin of the context (e.g. URL, conversation, document).
+.TP
+.B node_type
+\fBsnapshot\fR or \fBlive\fR.
+.TP
+.B context
+Human/LLM-readable description.
+.TP
+.B creator
+Email of the node creator.
+.TP
+.B status
+\fBactive\fR (default), \fBarchived\fR, or \fBsuppressed\fR.
+.TP
+.B tags
+Optional list of tags.
+.TP
+.B related_to
+Optional list of related node IDs. Supports cross-pool
+(\fIpool::node_id\fR) and cross-registry (\fIregistry::pool::node_id\fR) references.
+.TP
+.B meta
+Optional metadata dictionary (e.g. \fBprovider\fR, \fBresolves_to\fR for live nodes).
+.RE
+.SH ENVIRONMENT
+.TP
+.B ALPH_CONFIG_DIR
+Override the global config directory (default: \fI~/.config/alph/\fR).
+Primarily used for testing.
+.TP
+.B GITHUB_TOKEN\fR, \fBGH_TOKEN
+GitHub personal access token for remote registry API reads.
+Falls back to \fBgh auth token\fR.
+.SH FILES
+.TP
+.I ~/.config/alph/config.yaml
+Global configuration file.
+.TP
+.I ~/.config/alph/secrets.yaml
+Secrets file (gitignored).
+.TP
+.I ~/.cache/alph/clones/
+Default location for remote registry clones.
+.SH EXAMPLES
+Create a local registry and pool:
+.PP
+.RS
+.nf
+alph registry init \-\-pool\-home ~/context \-\-id personal \-c "Personal context"
+alph pool init \-\-name projects \-c "Active projects"
+.fi
+.RE
+.PP
+Add a snapshot node:
+.PP
+.RS
+.nf
+alph add \-c "Decided to use PostgreSQL for the new service"
+.fi
+.RE
+.PP
+List nodes, show one:
+.PP
+.RS
+.nf
+alph list
+alph show a1b2c3d4e5f6
+.fi
+.RE
+.PP
+Set up a read-only remote registry:
+.PP
+.RS
+.nf
+alph registry init \-\-pool\-home git@github.com:org/repo.git:/registry \\
+    \-\-id shared \-c "Shared team context" \-\-mode ro \-\-branch main
+alph list \-\-registry shared \-\-pool standards
+.fi
+.RE
+.PP
+Check config for typos:
+.PP
+.RS
+.nf
+alph config check
+alph config show\-all
+.fi
+.RE
+.SH MCP SERVER
+.B alph\-mcp
+exposes the same core functions as MCP tools for LLM integration.
+It is installed alongside \fBalph\fR and can be configured as an MCP server
+in Claude, Cursor, or other MCP-compatible clients.
+.SH SEE ALSO
+.BR git (1)
+.PP
+Project: https://github.com/AlpheusCEF/alph-cli
+.SH AUTHORS
+Chase Pettet
