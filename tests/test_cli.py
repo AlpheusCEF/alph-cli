@@ -1169,6 +1169,44 @@ def test_registry_override_ro_when_rw_shares_url(tmp_path: Path, monkeypatch) ->
     assert call_kwargs.get("ref") == "seeded"
 
 
+def test_adhoc_registry_url_does_not_match_configured_rw(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """--registry <raw-url> uses ephemeral RO, ignoring configured RW with same URL."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "registries": {
+            "rw-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Read-write.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_prov = _mock_provider()
+    with patch("alph.cli.provider_for_url", return_value=mock_prov), \
+            patch("alph.cli.resolve_pool_readonly") as mock_resolve, \
+            patch("alph.cli.clone_remote_registry") as mock_clone:
+        pool_dir = tmp_path / "pool"
+        (pool_dir / "snapshots").mkdir(parents=True)
+        (pool_dir / "live").mkdir(parents=True)
+        mock_resolve.return_value.__enter__ = lambda s: pool_dir
+        mock_resolve.return_value.__exit__ = lambda s, *a: None
+        result = runner.invoke(app, [
+            "--registry", "git@github.com:org/repo.git:/data",
+            "list", "--pool", "vehicles",
+        ])
+    assert result.exit_code == 0, f"Expected success but got: {result.output}"
+    # Must use RO API path, not the RW clone.
+    mock_resolve.assert_called_once()
+    mock_clone.assert_not_called()
+    # Default ref is HEAD (no branch config for ad-hoc URL).
+    call_kwargs = mock_resolve.call_args.kwargs
+    assert call_kwargs.get("ref") == "HEAD"
+
+
 def test_global_registry_option_unknown_errors(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """alph --registry <unknown> list errors."""
     global_dir = tmp_path / "global"

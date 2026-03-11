@@ -464,40 +464,47 @@ def test_clone_remote_registry_custom_depth(tmp_path: Path) -> None:
     assert call_args[depth_idx + 1] == "5"
 
 
-def test_clone_remote_registry_checks_out_branch_on_new_clone(tmp_path: Path) -> None:
-    """clone_remote_registry checks out a branch after cloning when specified."""
+def test_clone_remote_registry_passes_branch_to_git_clone(tmp_path: Path) -> None:
+    """clone_remote_registry passes --branch to git clone when specified."""
     clone_dir = tmp_path / "clone"
     mock_result = MagicMock()
     mock_result.returncode = 0
-    mock_result.stdout = "main"
     with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
         result = clone_remote_registry(
             "git@github.com:org/repo.git", clone_dir, branch="seeded",
         )
     assert result is True
-    # Should have: clone, rev-parse, fetch, checkout
-    cmds = [call[0][0] for call in mock_run.call_args_list]
-    assert cmds[0][1] == "clone"
-    assert any("fetch" in cmd for cmd in cmds)
-    assert any("checkout" in cmd for cmd in cmds)
+    # Single git clone call with --branch seeded.
+    assert mock_run.call_count == 1
+    clone_cmd = mock_run.call_args_list[0][0][0]
+    assert clone_cmd[1] == "clone"
+    assert "--branch" in clone_cmd
+    assert "seeded" in clone_cmd
 
 
 def test_clone_remote_registry_checks_out_branch_on_existing(tmp_path: Path) -> None:
     """clone_remote_registry checks out branch on existing clone if not on it."""
     clone_dir = tmp_path / "clone"
     (clone_dir / ".git").mkdir(parents=True)
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = "main"  # currently on main, not seeded
-    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+
+    def _side_effect(cmd: list[str], **kwargs: object) -> MagicMock:
+        r = MagicMock()
+        r.returncode = 0
+        r.stdout = "main"
+        r.stderr = ""
+        # Simulate: rev-parse returns "main", simple checkout succeeds.
+        if "checkout" in cmd and "-b" not in cmd and cmd[-1] == "seeded":
+            r.returncode = 0  # simple checkout works
+        return r
+
+    with patch("alph.remote.subprocess.run", side_effect=_side_effect) as mock_run:
         result = clone_remote_registry(
             "git@github.com:org/repo.git", clone_dir, branch="seeded",
         )
     assert result is False
-    # Should have: rev-parse, fetch, checkout (no clone)
+    # Should have: rev-parse, checkout (no clone)
     cmds = [call[0][0] for call in mock_run.call_args_list]
     assert not any(c[1] == "clone" for c in cmds if len(c) > 1)
-    assert any("fetch" in cmd for cmd in cmds)
     assert any("checkout" in cmd for cmd in cmds)
 
 

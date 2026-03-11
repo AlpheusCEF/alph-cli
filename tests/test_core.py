@@ -21,6 +21,7 @@ from alph.core import (
     is_remote_registry,
     list_config_paths,
     list_nodes,
+    list_pools,
     load_config,
     load_state,
     parse_remote_registry,
@@ -397,6 +398,87 @@ def test_init_pool_does_not_override_existing_default_pool(tmp_path: Path) -> No
     )
     global_config = yaml.safe_load((global_dir / "config.yaml").read_text())
     assert global_config["default_pool"] == "existing-pool"
+
+
+def test_list_pools_includes_configured_pools(tmp_path: Path) -> None:
+    """list_pools returns pools declared in the config."""
+    global_dir = tmp_path / "global"
+    reg_dir = tmp_path / "registry"
+    reg_dir.mkdir()
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "home": {
+                "pool_home": str(reg_dir),
+                "context": "Home",
+                "pools": {
+                    "vehicles": {"context": "Cars.", "type": "subdir"},
+                },
+            },
+        },
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    result = list_pools("home", cfg=cfg)
+    assert result is not None
+    assert len(result) == 1
+    assert result[0].name == "vehicles"
+    assert result[0].source == "configured"
+
+
+def test_list_pools_discovers_unconfigured_pools_on_disk(tmp_path: Path) -> None:
+    """list_pools discovers pools that exist on disk but are not in the config."""
+    global_dir = tmp_path / "global"
+    reg_dir = tmp_path / "registry"
+    (reg_dir / "vehicles" / "snapshots").mkdir(parents=True)
+    (reg_dir / "appliances" / "live").mkdir(parents=True)
+    (reg_dir / "not-a-pool").mkdir(parents=True)  # no snapshots/ or live/
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "home": {
+                "pool_home": str(reg_dir),
+                "context": "Home",
+                "pools": {
+                    "vehicles": {"context": "Cars.", "type": "subdir"},
+                },
+            },
+        },
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    result = list_pools("home", cfg=cfg)
+    assert result is not None
+    names = {s.name: s.source for s in result}
+    assert names["vehicles"] == "configured"
+    assert names["appliances"] == "discovered"
+    assert "not-a-pool" not in names
+
+
+def test_list_pools_no_duplicate_for_configured_on_disk(tmp_path: Path) -> None:
+    """list_pools does not duplicate a pool that is both configured and on disk."""
+    global_dir = tmp_path / "global"
+    reg_dir = tmp_path / "registry"
+    (reg_dir / "vehicles" / "snapshots").mkdir(parents=True)
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "home": {
+                "pool_home": str(reg_dir),
+                "context": "Home",
+                "pools": {
+                    "vehicles": {"context": "Cars.", "type": "subdir"},
+                },
+            },
+        },
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    result = list_pools("home", cfg=cfg)
+    assert result is not None
+    vehicle_entries = [s for s in result if s.name == "vehicles"]
+    assert len(vehicle_entries) == 1
+    assert vehicle_entries[0].source == "configured"
+
+
+def test_list_pools_returns_none_for_unknown_registry(tmp_path: Path) -> None:
+    """list_pools returns None when registry is not found."""
+    cfg = load_config(global_config_dir=tmp_path / "global")
+    assert list_pools("ghost", cfg=cfg) is None
 
 
 def test_load_config_returns_defaults_when_no_files_exist(tmp_path: Path) -> None:

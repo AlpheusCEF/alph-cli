@@ -147,12 +147,13 @@ class RegistrySummary:
 
 @dataclass(frozen=True)
 class PoolSummary:
-    """A pool entry as collected from registry config, for display."""
+    """A pool entry for display — may be configured or discovered on disk."""
 
     name: str
     context: str
     pool_type: str
     path: Path
+    source: str = "configured"  # "configured" or "discovered"
 
 
 @dataclass(frozen=True)
@@ -505,6 +506,11 @@ def load_config(
     )
 
 
+def _is_pool_dir(path: Path) -> bool:
+    """Return True if *path* looks like a pool (has snapshots/ or live/)."""
+    return (path / "snapshots").is_dir() or (path / "live").is_dir()
+
+
 def list_pools(
     registry_id_or_name: str,
     *,
@@ -512,33 +518,56 @@ def list_pools(
 ) -> list[PoolSummary] | None:
     """Return display summaries for all pools in a registry.
 
-    Reads pool metadata from ``cfg.registries`` — no additional file I/O.
+    Combines configured pools from ``cfg.registries`` with pools
+    discovered on disk (subdirectories of ``pool_home`` containing
+    ``snapshots/`` or ``live/``).  Discovered pools that are not in
+    the config are included with ``source="discovered"``.
+
+    For remote registries whose ``pool_home`` is a URL, only
+    configured pools are returned (discovery requires a provider and
+    is handled by the CLI layer).
+
     Returns ``None`` if the registry is not found.
-
-    Args:
-        registry_id_or_name: Registry ID or human-readable name.
-        cfg: Merged config from ``load_config``.
-
-    Returns:
-        List of PoolSummary, one per registered pool, or None if registry not found.
     """
     found = find_registry_config(registry_id_or_name, cfg=cfg)
     if found is None:
         return None
     reg_id, home = found
     entry = cfg.registries[reg_id]
+
+    # Configured pools.
+    configured_names: set[str] = set()
     summaries: list[PoolSummary] = []
     for pool_name, pool_data in entry.pools.items():
         if not isinstance(pool_data, dict):
             continue
+        configured_names.add(pool_name)
         summaries.append(
             PoolSummary(
                 name=pool_name,
                 context=str(pool_data.get("context", "")),
                 pool_type=str(pool_data.get("type", "subdir")),
                 path=home / pool_name,
+                source="configured",
             )
         )
+
+    # Discover pools on disk for local registries.
+    if not is_remote_registry(entry.pool_home) and home.is_dir():
+        for child in sorted(home.iterdir()):
+            if child.name in configured_names:
+                continue
+            if child.is_dir() and _is_pool_dir(child):
+                summaries.append(
+                    PoolSummary(
+                        name=child.name,
+                        context="",
+                        pool_type="subdir",
+                        path=child,
+                        source="discovered",
+                    )
+                )
+
     return summaries
 
 

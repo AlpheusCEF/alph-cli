@@ -227,7 +227,10 @@ def _find_entry_for_pool(pool_str: str, cfg: AlphConfig) -> RegistryEntry | None
     """
     # Honour explicit --registry override.
     reg_override = _registry_override
-    if reg_override and not is_remote_registry(reg_override):
+    if reg_override:
+        if is_remote_registry(reg_override):
+            # Ad-hoc URL — no config entry; force ephemeral RO.
+            return None
         from alph.core import find_registry_config
 
         found = find_registry_config(reg_override, cfg=cfg)
@@ -788,7 +791,7 @@ def pool_list(
     cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for config lookup."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
-    """List all pools registered under a registry."""
+    """List pools in a registry (configured and discovered on disk)."""
     _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
     cfg = _load_cli_config(cwd=resolved_cwd)
@@ -820,10 +823,16 @@ def pool_list(
     table.add_column("registry", width=20)
     table.add_column("name", width=20)
     table.add_column("type", width=8)
+    if _verbose:
+        table.add_column("source", width=12)
     table.add_column("context")
     table.add_column("path")
     for s in summaries:
-        table.add_row(registry_id, s.name, s.pool_type, s.context, str(s.path))
+        row: list[str] = [registry_id, s.name, s.pool_type]
+        if _verbose:
+            row.append(s.source)
+        row.extend([s.context, str(s.path)])
+        table.add_row(*row)
     console.print(table)
 
 

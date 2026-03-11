@@ -352,8 +352,13 @@ def default_clone_dir(remote_url: str) -> Path:
 
 
 def _checkout_branch(clone_dir: Path, branch: str) -> None:
-    """Check out a branch in a clone, fetching it first if shallow."""
-    # Check current branch.
+    """Check out a branch in a clone, fetching it first if needed.
+
+    Handles shallow clones where the branch may not exist locally.
+    Tries ``git checkout <branch>`` first; if that fails, fetches the
+    branch and creates a local tracking branch from ``origin/<branch>``.
+    """
+    # Already on the right branch?
     head = subprocess.run(
         ["git", "-C", str(clone_dir), "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True, text=True, timeout=10,
@@ -361,7 +366,16 @@ def _checkout_branch(clone_dir: Path, branch: str) -> None:
     if head.returncode == 0 and head.stdout.strip() == branch:
         return
 
-    # For shallow clones, fetch the branch before checking out.
+    # Try simple checkout first (works if branch exists locally).
+    simple = subprocess.run(
+        ["git", "-C", str(clone_dir), "checkout", branch],
+        capture_output=True, text=True, timeout=30,
+    )
+    if simple.returncode == 0:
+        logger.debug("checked out branch: %s", branch)
+        return
+
+    # Branch not local — fetch and create a tracking branch.
     fetch = subprocess.run(
         ["git", "-C", str(clone_dir), "fetch", "origin", branch],
         capture_output=True, text=True, timeout=60,
@@ -372,14 +386,16 @@ def _checkout_branch(clone_dir: Path, branch: str) -> None:
         )
 
     result = subprocess.run(
-        ["git", "-C", str(clone_dir), "checkout", branch],
+        ["git", "-C", str(clone_dir), "checkout", "-b", branch,
+         f"origin/{branch}"],
         capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"git checkout {branch} failed: {result.stderr.strip()}"
+            f"git checkout -b {branch} origin/{branch} failed: "
+            f"{result.stderr.strip()}"
         )
-    logger.debug("checked out branch: %s", branch)
+    logger.debug("checked out branch: %s (from origin)", branch)
 
 
 def clone_remote_registry(
@@ -414,7 +430,10 @@ def clone_remote_registry(
 
     clone_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = ["git", "clone", "--depth", str(depth), remote_url, str(clone_dir)]
+    cmd = ["git", "clone", "--depth", str(depth)]
+    if branch:
+        cmd.extend(["--branch", branch])
+    cmd.extend([remote_url, str(clone_dir)])
     logger.debug("cloning: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
@@ -422,8 +441,6 @@ def clone_remote_registry(
             f"git clone failed (exit {result.returncode}): "
             f"{result.stderr.strip()}"
         )
-    if branch:
-        _checkout_branch(clone_dir, branch)
     return True
 
 
