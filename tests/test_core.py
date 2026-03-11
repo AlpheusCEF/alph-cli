@@ -309,6 +309,11 @@ def test_init_pool_registers_pool_in_global_config(tmp_path: Path) -> None:
     global_dir = tmp_path / "global"
     init_registry(pool_home=tmp_path, registry_id="reg-01", context="Test registry",
                   global_config_dir=global_dir)
+    # Enable config registration so pool entry is written.
+    cfg_path = global_dir / "config.yaml"
+    data = yaml.safe_load(cfg_path.read_text())
+    data["register_subdir_pools"] = True
+    cfg_path.write_text(yaml.dump(data, sort_keys=False))
     result = init_pool(
         registry_id="reg-01",
         name="highlander",
@@ -668,6 +673,11 @@ def test_init_pool_stores_type_not_layout(tmp_path: Path) -> None:
     """init_pool stores 'type' (not 'layout') and omits 'path' in pool metadata."""
     global_dir = tmp_path / "global"
     init_registry(pool_home=tmp_path, registry_id="reg-01", context="Test", global_config_dir=global_dir)
+    # Enable config registration so pool entry is written.
+    cfg_path = global_dir / "config.yaml"
+    data = yaml.safe_load(cfg_path.read_text())
+    data["register_subdir_pools"] = True
+    cfg_path.write_text(yaml.dump(data, sort_keys=False))
     init_pool(
         registry_id="reg-01",
         name="vehicles",
@@ -1921,3 +1931,299 @@ def test_init_pool_rejects_duplicate_directory_on_disk(tmp_path: Path) -> None:
     )
     assert not result.valid
     assert any("already exists" in e for e in result.errors)
+
+
+# ---------------------------------------------------------------------------
+# validate_config_keys — detect unknown config keys
+# ---------------------------------------------------------------------------
+
+
+def test_validate_config_keys_accepts_known_root_keys(tmp_path: Path) -> None:
+    """validate_config_keys returns no warnings for valid root-level keys."""
+    from alph.core import validate_config_keys
+
+    data = {
+        "creator": "a@b.com",
+        "auto_commit": True,
+        "default_registry": "reg",
+        "default_pool": "pool",
+        "registries": {},
+    }
+    warnings = validate_config_keys(data)
+    assert warnings == []
+
+
+def test_validate_config_keys_detects_unknown_root_key(tmp_path: Path) -> None:
+    """validate_config_keys flags unrecognized root-level keys."""
+    from alph.core import validate_config_keys
+
+    data = {"creator": "a@b.com", "typo_key": "oops"}
+    warnings = validate_config_keys(data)
+    assert len(warnings) == 1
+    assert "typo_key" in warnings[0]
+
+
+def test_validate_config_keys_detects_unknown_registry_entry_key(tmp_path: Path) -> None:
+    """validate_config_keys flags unrecognized keys inside a registry entry."""
+    from alph.core import validate_config_keys
+
+    data = {
+        "registries": {
+            "my-reg": {
+                "pool_home": "/some/path",
+                "context": "ok",
+                "clone_dir": "/wrong/key",  # should be clone_path
+            },
+        },
+    }
+    warnings = validate_config_keys(data)
+    assert len(warnings) == 1
+    assert "clone_dir" in warnings[0]
+    assert "my-reg" in warnings[0]
+
+
+def test_validate_config_keys_accepts_known_registry_entry_keys(tmp_path: Path) -> None:
+    """validate_config_keys returns no warnings for valid registry entry keys."""
+    from alph.core import validate_config_keys
+
+    data = {
+        "registries": {
+            "r1": {
+                "pool_home": "/path",
+                "context": "ctx",
+                "name": "n",
+                "pools": {},
+                "mode": "ro",
+                "clone_path": "/c",
+                "auto_push": True,
+                "auto_pull": False,
+                "branch": "main",
+            },
+        },
+    }
+    warnings = validate_config_keys(data)
+    assert warnings == []
+
+
+def test_validate_config_keys_detects_legacy_home_key(tmp_path: Path) -> None:
+    """validate_config_keys flags legacy 'home' key (should be pool_home)."""
+    from alph.core import validate_config_keys
+
+    data = {"registries": {"r": {"home": "/path", "context": "x"}}}
+    warnings = validate_config_keys(data)
+    assert len(warnings) == 1
+    assert "home" in warnings[0]
+    assert "pool_home" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# .alph.yaml dotfile — pool-local metadata
+# ---------------------------------------------------------------------------
+
+
+def test_init_pool_writes_dotfile_when_register_subdir_pools_false(tmp_path: Path) -> None:
+    """init_pool writes .alph.yaml in the pool dir when register_subdir_pools is false."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "reg"
+    init_registry(
+        pool_home=reg_home,
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    # Set register_subdir_pools: false in global config.
+    cfg_path = global_dir / "config.yaml"
+    data = yaml.safe_load(cfg_path.read_text())
+    data["register_subdir_pools"] = False
+    cfg_path.write_text(yaml.dump(data, sort_keys=False))
+
+    result = init_pool(
+        registry_id="test-reg",
+        name="mypool",
+        context="Pool context.",
+        cwd=reg_home,
+        global_config_dir=global_dir,
+    )
+    assert result.valid
+    # .alph.yaml should exist in pool dir.
+    dotfile = result.pool_path / ".alph.yaml"
+    assert dotfile.exists()
+    dot_data = yaml.safe_load(dotfile.read_text())
+    assert dot_data["context"] == "Pool context."
+    assert "creator" in dot_data
+    assert "created" in dot_data
+
+
+def test_init_pool_dotfile_no_config_entry_when_register_subdir_pools_false(tmp_path: Path) -> None:
+    """init_pool does NOT write a pool entry to config when register_subdir_pools is false."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "reg"
+    init_registry(
+        pool_home=reg_home,
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    cfg_path = global_dir / "config.yaml"
+    data = yaml.safe_load(cfg_path.read_text())
+    data["register_subdir_pools"] = False
+    cfg_path.write_text(yaml.dump(data, sort_keys=False))
+
+    init_pool(
+        registry_id="test-reg",
+        name="mypool",
+        context="Pool context.",
+        cwd=reg_home,
+        global_config_dir=global_dir,
+    )
+    # Re-read config — should NOT have a pools entry.
+    final_data = yaml.safe_load(cfg_path.read_text())
+    reg_entry = final_data["registries"]["test-reg"]
+    assert "pools" not in reg_entry or "mypool" not in reg_entry.get("pools", {})
+
+
+def test_init_pool_writes_config_entry_when_register_subdir_pools_true(tmp_path: Path) -> None:
+    """init_pool writes both .alph.yaml and config entry when register_subdir_pools is true."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "reg"
+    init_registry(
+        pool_home=reg_home,
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    cfg_path = global_dir / "config.yaml"
+    data = yaml.safe_load(cfg_path.read_text())
+    data["register_subdir_pools"] = True
+    cfg_path.write_text(yaml.dump(data, sort_keys=False))
+
+    result = init_pool(
+        registry_id="test-reg",
+        name="mypool",
+        context="Pool context.",
+        cwd=reg_home,
+        global_config_dir=global_dir,
+    )
+    assert result.valid
+    # .alph.yaml should exist.
+    assert (result.pool_path / ".alph.yaml").exists()
+    # Config should also have the pool entry.
+    final_data = yaml.safe_load(cfg_path.read_text())
+    assert "mypool" in final_data["registries"]["test-reg"].get("pools", {})
+
+
+def test_init_pool_default_register_subdir_pools_is_false(tmp_path: Path) -> None:
+    """register_subdir_pools defaults to false — init_pool writes dotfile, not config entry."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "reg"
+    init_registry(
+        pool_home=reg_home,
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+
+    result = init_pool(
+        registry_id="test-reg",
+        name="mypool",
+        context="Pool context.",
+        cwd=reg_home,
+        global_config_dir=global_dir,
+    )
+    assert result.valid
+    assert (result.pool_path / ".alph.yaml").exists()
+    # Config should NOT have pools entry.
+    cfg_path = global_dir / "config.yaml"
+    final_data = yaml.safe_load(cfg_path.read_text())
+    reg_entry = final_data["registries"]["test-reg"]
+    assert "pools" not in reg_entry or "mypool" not in reg_entry.get("pools", {})
+
+
+def test_list_pools_reads_dotfile_context(tmp_path: Path) -> None:
+    """list_pools reads .alph.yaml from discovered pool dirs for context."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "reg"
+    init_registry(
+        pool_home=reg_home,
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    # Manually create a pool dir with .alph.yaml (no config entry).
+    pool_dir = reg_home / "manual-pool"
+    (pool_dir / "snapshots").mkdir(parents=True)
+    (pool_dir / "live").mkdir(parents=True)
+    (pool_dir / ".alph.yaml").write_text(yaml.dump({
+        "context": "Manually created pool.",
+        "creator": "a@b.com",
+        "created": "2026-03-11T00:00:00Z",
+    }))
+
+    cfg = load_config(global_config_dir=global_dir, cwd=reg_home)
+    pools = list_pools("test-reg", cfg=cfg)
+    assert pools is not None
+    names = {p.name: p for p in pools}
+    assert "manual-pool" in names
+    assert names["manual-pool"].context == "Manually created pool."
+    assert names["manual-pool"].source == "discovered"
+
+
+def test_init_pool_dotfile_duplicate_detection(tmp_path: Path) -> None:
+    """init_pool detects duplicate when pool dir with .alph.yaml already exists."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "reg"
+    init_registry(
+        pool_home=reg_home,
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    # First init should succeed.
+    result1 = init_pool(
+        registry_id="test-reg",
+        name="dup-pool",
+        context="First.",
+        cwd=reg_home,
+        global_config_dir=global_dir,
+    )
+    assert result1.valid
+
+    # Second init should fail (directory already exists).
+    result2 = init_pool(
+        registry_id="test-reg",
+        name="dup-pool",
+        context="Second.",
+        cwd=reg_home,
+        global_config_dir=global_dir,
+    )
+    assert not result2.valid
+    assert any("already exists" in e for e in result2.errors)
+
+
+def test_init_pool_repo_type_always_writes_config_entry(tmp_path: Path) -> None:
+    """init_pool for pool_type='repo' always writes a config entry regardless of register_subdir_pools."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "reg"
+    init_registry(
+        pool_home=reg_home,
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    cfg_path = global_dir / "config.yaml"
+    data = yaml.safe_load(cfg_path.read_text())
+    data["register_subdir_pools"] = False
+    cfg_path.write_text(yaml.dump(data, sort_keys=False))
+
+    result = init_pool(
+        registry_id="test-reg",
+        name="repo-pool",
+        context="Repo pool.",
+        pool_type="repo",
+        cwd=reg_home,
+        global_config_dir=global_dir,
+    )
+    assert result.valid
+    # Repo pools always go in config.
+    final_data = yaml.safe_load(cfg_path.read_text())
+    assert "repo-pool" in final_data["registries"]["test-reg"].get("pools", {})

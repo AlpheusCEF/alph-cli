@@ -34,6 +34,7 @@ from alph.core import (
     resolve_default_pool,
     resolve_pool_name,
     show_node,
+    validate_config_keys,
     validate_node,
 )
 from alph.remote import (
@@ -130,6 +131,22 @@ def _load_cli_config(cwd: Path | None = None) -> AlphConfig:
         global_config_dir=_global_config_dir(),
         cwd=effective_cwd,
     )
+
+
+def _resolve_registry_id(registry_id: str | None, cfg: AlphConfig) -> str:
+    """Resolve an optional registry ID, falling back to default_registry.
+
+    Exits with an error if no ID was provided and no default is configured.
+    """
+    if registry_id:
+        return registry_id
+    if cfg.default_registry:
+        return cfg.default_registry
+    console.print(
+        "[red]error:[/red] no registry specified and no default_registry set.\n"
+        "  pass a REGISTRY_ID argument or set default_registry in config."
+    )
+    raise typer.Exit(code=1)
 
 
 def _require_pool(pool_flag: str | None, cfg: AlphConfig) -> str:
@@ -536,8 +553,8 @@ def _check_single_registry(reg_id: str, cfg: AlphConfig) -> None:
 
 @registry_app.command("check")
 def registry_check(
-    registry_id: str = typer.Argument(
-        ..., help="Registry ID or name to check.",
+    registry_id: str | None = typer.Argument(
+        None, help="Registry ID, name, or 'all'. Defaults to default_registry.",
     ),
     cwd: Path | None = typer.Option(
         None, "--cwd", hidden=True,
@@ -553,10 +570,11 @@ def registry_check(
     _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
     cfg = _load_cli_config(cwd=resolved_cwd)
+    resolved_id = _resolve_registry_id(registry_id, cfg)
 
     from alph.core import find_registry_config
 
-    if registry_id == "all":
+    if resolved_id == "all":
         if not cfg.registries:
             console.print("no registries found.")
             return
@@ -570,11 +588,11 @@ def registry_check(
             raise typer.Exit(code=1)
         return
 
-    found = find_registry_config(registry_id, cfg=cfg)
+    found = find_registry_config(resolved_id, cfg=cfg)
     if found is None:
         known = ", ".join(cfg.registries.keys()) or "(none)"
         console.print(
-            f"[red]error:[/red] {registry_id} not found. "
+            f"[red]error:[/red] {resolved_id} not found. "
             f"Known registries: {known}"
         )
         raise typer.Exit(code=1)
@@ -585,8 +603,8 @@ def registry_check(
 
 @registry_app.command("clone")
 def registry_clone(
-    registry_id: str = typer.Argument(
-        ..., help="Registry ID or name to clone.",
+    registry_id: str | None = typer.Argument(
+        None, help="Registry ID or name to clone. Defaults to default_registry.",
     ),
     clone_path: Path | None = typer.Option(
         None, "--clone-path",
@@ -606,14 +624,15 @@ def registry_clone(
     _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
     cfg = _load_cli_config(cwd=resolved_cwd)
+    resolved_id = _resolve_registry_id(registry_id, cfg)
 
     from alph.core import find_registry_config
 
-    found = find_registry_config(registry_id, cfg=cfg)
+    found = find_registry_config(resolved_id, cfg=cfg)
     if found is None:
         known = ", ".join(cfg.registries.keys()) or "(none)"
         console.print(
-            f"[red]error:[/red] {registry_id} not found. "
+            f"[red]error:[/red] {resolved_id} not found. "
             f"Known registries: {known}"
         )
         raise typer.Exit(code=1)
@@ -652,8 +671,8 @@ def registry_clone(
 
 @registry_app.command("pull")
 def registry_pull(
-    registry_id: str = typer.Argument(
-        ..., help="Registry ID or name to pull.",
+    registry_id: str | None = typer.Argument(
+        None, help="Registry ID or name to pull. Defaults to default_registry.",
     ),
     cwd: Path | None = typer.Option(
         None, "--cwd", hidden=True,
@@ -668,14 +687,15 @@ def registry_pull(
     _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
     cfg = _load_cli_config(cwd=resolved_cwd)
+    resolved_id = _resolve_registry_id(registry_id, cfg)
 
     from alph.core import find_registry_config
 
-    found = find_registry_config(registry_id, cfg=cfg)
+    found = find_registry_config(resolved_id, cfg=cfg)
     if found is None:
         known = ", ".join(cfg.registries.keys()) or "(none)"
         console.print(
-            f"[red]error:[/red] {registry_id} not found. "
+            f"[red]error:[/red] {resolved_id} not found. "
             f"Known registries: {known}"
         )
         raise typer.Exit(code=1)
@@ -711,8 +731,8 @@ def registry_pull(
 
 @registry_app.command("status")
 def registry_status(
-    registry_id: str = typer.Argument(
-        ..., help="Registry ID or name to inspect.",
+    registry_id: str | None = typer.Argument(
+        None, help="Registry ID or name to inspect. Defaults to default_registry.",
     ),
     cwd: Path | None = typer.Option(
         None, "--cwd", hidden=True,
@@ -724,14 +744,15 @@ def registry_status(
     _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
     cfg = _load_cli_config(cwd=resolved_cwd)
+    resolved_id = _resolve_registry_id(registry_id, cfg)
 
     from alph.core import find_registry_config
 
-    found = find_registry_config(registry_id, cfg=cfg)
+    found = find_registry_config(resolved_id, cfg=cfg)
     if found is None:
         known = ", ".join(cfg.registries.keys()) or "(none)"
         console.print(
-            f"[red]error:[/red] {registry_id} not found. "
+            f"[red]error:[/red] {resolved_id} not found. "
             f"Known registries: {known}"
         )
         raise typer.Exit(code=1)
@@ -1217,6 +1238,84 @@ def config_show(
         console.print("  run [bold]alph defaults[/bold] to see what is currently configured.")
 
 
+@config_app.command("check")
+def config_check(
+    cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for config path walk."),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Check all config files for unknown or legacy keys.
+
+    Reads every config file in the discovery tree and reports unrecognized
+    keys that may indicate typos (e.g. 'clone_dir' instead of 'clone_path').
+    """
+    _apply_verbose(verbose)
+    resolved_cwd = cwd if cwd is not None else Path.cwd()
+    summaries = list_config_paths(global_config_dir=_global_config_dir(), cwd=resolved_cwd)
+    all_warnings: list[str] = []
+    for s in summaries:
+        if not s.exists:
+            continue
+        import yaml as _yaml
+        data = _yaml.safe_load(s.path.read_text()) or {}
+        if not isinstance(data, dict):
+            continue
+        warnings = validate_config_keys(data)
+        for w in warnings:
+            all_warnings.append(f"{s.path}: {w}")
+    if all_warnings:
+        for w in all_warnings:
+            console.print(f"[yellow]warning:[/yellow] {w}")
+        console.print(f"\n[red]{len(all_warnings)} issue{'s' if len(all_warnings) != 1 else ''} found.[/red]")
+        raise typer.Exit(code=1)
+    console.print("[green]ok:[/green] all config files use recognized keys.")
+
+
+@config_app.command("show-all")
+def config_show_all(
+    cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for config lookup."),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Display the fully merged config with all default values filled in.
+
+    Shows the resolved configuration as alph sees it — including implicit
+    defaults for auto_commit, auto_push, auto_pull, mode, etc. Useful for
+    inspecting which values are in effect without reading multiple files.
+    """
+    _apply_verbose(verbose)
+    resolved_cwd = cwd if cwd is not None else Path.cwd()
+    cfg = _load_cli_config(cwd=resolved_cwd)
+
+    import yaml as _yaml
+
+    regs: dict[str, object] = {}
+    for reg_id, entry in cfg.registries.items():
+        reg_dict: dict[str, object] = {
+            "pool_home": entry.pool_home,
+            "context": entry.context,
+            "name": entry.name,
+            "mode": effective_mode(entry),
+            "clone_path": entry.clone_path,
+            "branch": entry.branch,
+            "auto_push": entry.auto_push,
+            "auto_pull": entry.auto_pull,
+        }
+        if entry.pools:
+            reg_dict["pools"] = dict(entry.pools)
+        regs[reg_id] = reg_dict
+
+    full: dict[str, object] = {
+        "creator": cfg.creator,
+        "auto_commit": cfg.auto_commit,
+        "default_registry": cfg.default_registry,
+        "default_pool": cfg.default_pool,
+        "register_subdir_pools": cfg.register_subdir_pools,
+        "registries": regs,
+    }
+    text = _yaml.dump(full, default_flow_style=False, sort_keys=False)
+    console.print("[bold]merged config (all defaults resolved)[/bold]\n")
+    console.print(Syntax(text, "yaml", theme="monokai", line_numbers=False))
+
+
 @app.command("defaults")
 def cmd_defaults(
     cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for config lookup."),
@@ -1235,6 +1334,7 @@ def cmd_defaults(
     console.print(f"  default_registry: {_val(cfg.default_registry)}")
     console.print(f"  default_pool:     {_val(cfg.default_pool)}")
     console.print(f"  auto_commit:      {cfg.auto_commit}")
+    console.print(f"  register_subdir_pools: {cfg.register_subdir_pools}")
 
     if cfg.default_registry and cfg.default_registry in cfg.registries:
         entry = cfg.registries[cfg.default_registry]

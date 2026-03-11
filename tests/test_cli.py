@@ -1349,3 +1349,112 @@ def test_registry_check_all_checks_every_registry(tmp_path: Path, monkeypatch) -
     assert result.exit_code == 0
     assert "reg-a" in result.output
     assert "reg-b" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Registry commands default to default_registry
+# ---------------------------------------------------------------------------
+
+
+def test_registry_check_uses_default_registry_when_no_arg(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry check with no argument uses default_registry."""
+    global_dir = tmp_path / "global"
+    (tmp_path / "local").mkdir()
+    _write_global_config(global_dir, {
+        "default_registry": "local-reg",
+        "registries": {
+            "local-reg": {
+                "pool_home": str(tmp_path / "local"),
+                "context": "Local test.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["registry", "check"])
+    assert result.exit_code == 0
+    assert "local-reg" in result.output
+
+
+def test_registry_check_errors_when_no_arg_no_default(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry check with no argument and no default_registry prints error."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "reg-a": {"pool_home": str(tmp_path / "local"), "context": "A."},
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["registry", "check"])
+    assert result.exit_code == 1
+    assert "default_registry" in result.output
+
+
+def test_registry_status_uses_default_registry_when_no_arg(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry status with no argument uses default_registry."""
+    global_dir = tmp_path / "global"
+    (tmp_path / "local").mkdir()
+    _write_global_config(global_dir, {
+        "default_registry": "loc",
+        "registries": {
+            "loc": {"pool_home": str(tmp_path / "local"), "context": "Test."},
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["registry", "status"])
+    assert result.exit_code == 0
+    assert "loc" in result.output
+
+
+# ---------------------------------------------------------------------------
+# alph config check — unknown key detection
+# ---------------------------------------------------------------------------
+
+
+def test_config_check_clean_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph config check reports no warnings for a valid config."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "creator": "a@b.com",
+        "default_registry": "r",
+        "registries": {"r": {"pool_home": "/p", "context": "c"}},
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["config", "check", "--cwd", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "no issues" in result.output.lower() or "ok" in result.output.lower()
+
+
+def test_config_check_detects_unknown_key(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph config check flags unknown keys."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "creator": "a@b.com",
+        "bogus_option": True,
+        "registries": {"r": {"pool_home": "/p", "context": "c", "clone_dir": "/x"}},
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["config", "check", "--cwd", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "bogus_option" in result.output
+    assert "clone_dir" in result.output
+
+
+# ---------------------------------------------------------------------------
+# alph config show-all — display merged config with defaults
+# ---------------------------------------------------------------------------
+
+
+def test_config_show_all_displays_merged_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph config show-all outputs the merged config with all defaults filled in."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "creator": "a@b.com",
+        "registries": {"r1": {"pool_home": "/p", "context": "c"}},
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["config", "show-all", "--cwd", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "auto_commit" in result.output
+    assert "default_registry" in result.output
+    assert "auto_push" in result.output
+    assert "auto_pull" in result.output

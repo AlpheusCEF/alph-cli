@@ -65,6 +65,7 @@ class AlphConfig:
     auto_commit: bool = False
     default_registry: str = ""
     default_pool: str = ""
+    register_subdir_pools: bool = False
     registries: dict[str, RegistryEntry] = field(default_factory=dict)
 
 
@@ -549,8 +550,54 @@ def load_config(
         auto_commit=bool(merged.get("auto_commit", False)),
         default_registry=str(merged.get("default_registry", "")),
         default_pool=str(merged.get("default_pool", "")),
+        register_subdir_pools=bool(merged.get("register_subdir_pools", False)),
         registries=accumulated_registries,
     )
+
+
+# ---------------------------------------------------------------------------
+# Config key validation
+# ---------------------------------------------------------------------------
+
+_VALID_ROOT_KEYS: frozenset[str] = frozenset({
+    "creator", "auto_commit", "default_registry", "default_pool",
+    "register_subdir_pools", "registries",
+})
+
+_VALID_REGISTRY_ENTRY_KEYS: frozenset[str] = frozenset({
+    "pool_home", "context", "name", "pools", "mode",
+    "clone_path", "auto_push", "auto_pull", "branch",
+})
+
+_LEGACY_REGISTRY_KEYS: dict[str, str] = {
+    "home": "pool_home",
+}
+
+
+def validate_config_keys(data: dict[str, object]) -> list[str]:
+    """Check a raw config dict for unknown or legacy keys.
+
+    Returns a list of human-readable warning strings. An empty list means
+    all keys are recognized.
+    """
+    warnings: list[str] = []
+    for key in data:
+        if key not in _VALID_ROOT_KEYS:
+            warnings.append(f"unknown root key: '{key}'")
+    regs = data.get("registries")
+    if isinstance(regs, dict):
+        for reg_id, entry in regs.items():
+            if not isinstance(entry, dict):
+                continue
+            for key in entry:
+                if key in _LEGACY_REGISTRY_KEYS:
+                    replacement = _LEGACY_REGISTRY_KEYS[key]
+                    warnings.append(
+                        f"registry '{reg_id}': legacy key '{key}' — use '{replacement}' instead"
+                    )
+                elif key not in _VALID_REGISTRY_ENTRY_KEYS:
+                    warnings.append(f"registry '{reg_id}': unknown key '{key}'")
+    return warnings
 
 
 def _is_pool_dir(path: Path) -> bool:
@@ -605,10 +652,20 @@ def list_pools(
             if child.name in configured_names:
                 continue
             if child.is_dir() and _is_pool_dir(child):
+                # Read .alph.yaml for metadata if it exists.
+                context = ""
+                dotfile = child / ".alph.yaml"
+                if dotfile.is_file():
+                    try:
+                        dot_data = yaml.safe_load(dotfile.read_text())
+                        if isinstance(dot_data, dict):
+                            context = str(dot_data.get("context", ""))
+                    except Exception:  # noqa: BLE001
+                        pass
                 summaries.append(
                     PoolSummary(
                         name=child.name,
-                        context="",
+                        context=context,
                         pool_type="subdir",
                         path=child,
                         source="discovered",
@@ -1064,7 +1121,21 @@ def init_pool(
     for subdir in ("snapshots", "live"):
         (pool_path / subdir).mkdir(parents=True, exist_ok=True)
 
-    # Update the registry entry in the GLOBAL config to add pool info.
+    # Always write .alph.yaml inside the pool dir.
+    dotfile_data: dict[str, object] = {
+        "context": context,
+        "creator": cfg.creator,
+        "created": datetime.now(UTC).isoformat(),
+    }
+    (pool_path / ".alph.yaml").write_text(
+        yaml.dump(dotfile_data, default_flow_style=False, sort_keys=False)
+    )
+
+    # Decide whether to also write a config entry.
+    # Repo-type pools always get a config entry (not discoverable by dir scan).
+    # Subdir pools only get a config entry when register_subdir_pools is true.
+    write_config_entry = pool_type == "repo" or cfg.register_subdir_pools
+
     global_config_path = global_config_dir / "config.yaml"
     global_data: dict[str, object] = {}
     if global_config_path.exists():
@@ -1072,23 +1143,24 @@ def init_pool(
         if isinstance(loaded, dict):
             global_data = loaded
 
-    global_registries = global_data.get("registries", {})
-    if not isinstance(global_registries, dict):
-        global_registries = {}
+    if write_config_entry:
+        global_registries = global_data.get("registries", {})
+        if not isinstance(global_registries, dict):
+            global_registries = {}
 
-    reg_entry = global_registries.get(actual_reg_id, {})
-    if isinstance(reg_entry, str):
-        reg_entry = {"pool_home": reg_entry}
-    if not isinstance(reg_entry, dict):
-        reg_entry = {}
+        reg_entry = global_registries.get(actual_reg_id, {})
+        if isinstance(reg_entry, str):
+            reg_entry = {"pool_home": reg_entry}
+        if not isinstance(reg_entry, dict):
+            reg_entry = {}
 
-    pools = reg_entry.get("pools", {})
-    if not isinstance(pools, dict):
-        pools = {}
-    pools[name] = {"context": context, "type": pool_type}
-    reg_entry["pools"] = pools
-    global_registries[actual_reg_id] = reg_entry
-    global_data["registries"] = global_registries
+        pools = reg_entry.get("pools", {})
+        if not isinstance(pools, dict):
+            pools = {}
+        pools[name] = {"context": context, "type": pool_type}
+        reg_entry["pools"] = pools
+        global_registries[actual_reg_id] = reg_entry
+        global_data["registries"] = global_registries
 
     # Set default_pool if this is the default registry and none is set.
     default_reg = str(global_data.get("default_registry", ""))
