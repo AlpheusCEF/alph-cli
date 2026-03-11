@@ -527,7 +527,7 @@ def registry_clone(
     """Clone a remote registry locally for RW access.
 
     Creates a shallow git clone of the registry's remote URL. If the
-    clone already exists, this is a no-op.
+    clone already exists, reports it with a distinct message.
     """
     _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
@@ -641,7 +641,7 @@ def registry_status(
     ),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
-    """Show status of a registry — mode, clone state, and config details."""
+    """Show status of a registry — mode, clone state, branch, auto_push, and path details."""
     _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
     cfg = _load_cli_config(cwd=resolved_cwd)
