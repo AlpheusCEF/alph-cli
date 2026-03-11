@@ -300,6 +300,11 @@ def _pool_context(
         )
         rw_branch = entry.branch if entry and entry.branch else ""
         clone_remote_registry(ref.remote_url, clone_dir, branch=rw_branch)
+        if entry and entry.auto_pull and (clone_dir / ".git").is_dir():
+            try:
+                pull_remote_registry(clone_dir)
+            except RuntimeError as exc:
+                console.print(f"[yellow]warning:[/yellow] auto-pull failed: {exc}")
         pool_path = clone_dir / ref.subpath if ref.subpath else clone_dir
         yield pool_path
         return
@@ -712,6 +717,7 @@ def registry_status(
         else:
             lines.append("clone_state: not cloned")
 
+        lines.append(f"auto_pull:   {str(entry.auto_pull).lower()}")
         lines.append(f"auto_push:   {str(entry.auto_push).lower()}")
     else:
         pool_home = Path(entry.pool_home)

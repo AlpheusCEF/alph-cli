@@ -1428,6 +1428,37 @@ def test_load_config_reads_clone_path_from_yaml(tmp_path: Path) -> None:
     assert cfg.registries["remote-reg"].clone_path == "/tmp/my-clone"
 
 
+def test_load_config_reads_auto_pull_from_yaml(tmp_path: Path) -> None:
+    """load_config picks up auto_pull from registry config YAML."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+                "auto_pull": True,
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].auto_pull is True
+
+
+def test_load_config_auto_pull_defaults_false(tmp_path: Path) -> None:
+    """load_config defaults auto_pull to False when omitted."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].auto_pull is False
+
+
 def test_load_config_reads_branch_from_yaml(tmp_path: Path) -> None:
     """load_config picks up branch from registry config YAML."""
     global_dir = tmp_path / "global"

@@ -1207,6 +1207,63 @@ def test_adhoc_registry_url_does_not_match_configured_rw(tmp_path: Path, monkeyp
     assert call_kwargs.get("ref") == "HEAD"
 
 
+def test_auto_pull_triggers_pull_on_rw_read(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """auto_pull: true triggers a pull before reading from an RW clone."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    pool_dir = clone_dir / "data" / "vehicles"
+    (pool_dir / "snapshots").mkdir(parents=True)
+    (pool_dir / "live").mkdir(parents=True)
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "default_registry": "rw-reg",
+        "default_pool": "vehicles",
+        "registries": {
+            "rw-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Read-write.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+                "auto_pull": True,
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    with patch("alph.cli.clone_remote_registry", return_value=False), \
+            patch("alph.cli.pull_remote_registry") as mock_pull:
+        result = runner.invoke(app, ["list"])
+    assert result.exit_code == 0, f"Expected success but got: {result.output}"
+    mock_pull.assert_called_once_with(clone_dir)
+
+
+def test_no_auto_pull_without_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Without auto_pull, reading from RW clone does not pull."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    pool_dir = clone_dir / "data" / "vehicles"
+    (pool_dir / "snapshots").mkdir(parents=True)
+    (pool_dir / "live").mkdir(parents=True)
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "default_registry": "rw-reg",
+        "default_pool": "vehicles",
+        "registries": {
+            "rw-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Read-write.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    with patch("alph.cli.clone_remote_registry", return_value=False), \
+            patch("alph.cli.pull_remote_registry") as mock_pull:
+        result = runner.invoke(app, ["list"])
+    assert result.exit_code == 0, f"Expected success but got: {result.output}"
+    mock_pull.assert_not_called()
+
+
 def test_global_registry_option_unknown_errors(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """alph --registry <unknown> list errors."""
     global_dir = tmp_path / "global"
