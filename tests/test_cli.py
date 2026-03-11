@@ -2,12 +2,14 @@
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import yaml
 from typer.testing import CliRunner
 
 from alph.cli import app
 from alph.core import extract_frontmatter
+from alph.remote import FileEntry
 
 runner = CliRunner()
 
@@ -506,3 +508,108 @@ def test_defaults_shows_not_set_when_unconfigured(tmp_path: Path, monkeypatch) -
     result = runner.invoke(app, ["defaults", "--cwd", str(tmp_path)])
     assert result.exit_code == 0
     assert "not set" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Remote registry CLI integration
+# ---------------------------------------------------------------------------
+
+
+def _mock_provider() -> MagicMock:
+    """Create a mock provider that returns one snapshot node."""
+    provider = MagicMock()
+    provider.list_files.side_effect = [
+        [FileEntry(name="abc123def456.md", path="reg/vehicles/snapshots/abc123def456.md", file_type="blob")],
+        [],  # live/ empty
+    ]
+    provider.read_files.return_value = {
+        "reg/vehicles/snapshots/abc123def456.md": (
+            "---\n"
+            "schema_version: '1'\n"
+            "id: abc123def456\n"
+            "timestamp: '2024-01-01T00:00:00+00:00'\n"
+            "source: cli\n"
+            "node_type: snapshot\n"
+            "context: Test node.\n"
+            "creator: test@example.com\n"
+            "status: active\n"
+            "---\n"
+        ),
+    }
+    return provider
+
+
+def test_list_remote_pool_via_url(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph list with a remote git URL resolves via provider."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_prov = _mock_provider()
+    with patch("alph.cli.provider_for_url", return_value=mock_prov):
+        result = runner.invoke(app, [
+            "list",
+            "--pool", "git@github.com:org/repo.git:/reg/vehicles",
+        ])
+    assert result.exit_code == 0
+    assert "abc123def456" in result.output
+
+
+def test_show_remote_pool_via_url(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph show with a remote git URL resolves via provider."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_prov = _mock_provider()
+    with patch("alph.cli.provider_for_url", return_value=mock_prov):
+        result = runner.invoke(app, [
+            "show", "abc123def456",
+            "--pool", "git@github.com:org/repo.git:/reg/vehicles",
+        ])
+    assert result.exit_code == 0
+    assert "Test node." in result.output
+
+
+def test_validate_remote_pool_via_url(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph validate with a remote git URL resolves via provider."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_prov = _mock_provider()
+    with patch("alph.cli.provider_for_url", return_value=mock_prov):
+        result = runner.invoke(app, [
+            "validate",
+            "--pool", "git@github.com:org/repo.git:/reg/vehicles",
+        ])
+    assert result.exit_code == 0
+    assert "valid" in result.output
+
+
+def test_add_remote_ro_pool_errors(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph add against a remote RO pool exits with error."""
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "add", "-c", "Should fail.",
+        "--pool", "git@github.com:org/repo.git:/reg/vehicles",
+        "--creator", "test@example.com",
+    ])
+    assert result.exit_code != 0
+    assert "read-only" in result.output
+
+
+def test_list_remote_default_pool(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph list resolves default pool from a remote registry."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "default_registry": "remote-reg",
+        "default_pool": "vehicles",
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/reg",
+                "context": "Remote test.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_prov = _mock_provider()
+    with patch("alph.cli.provider_for_url", return_value=mock_prov):
+        result = runner.invoke(app, ["list"])
+    assert result.exit_code == 0
+    assert "abc123def456" in result.output

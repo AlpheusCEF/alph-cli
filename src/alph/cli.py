@@ -6,6 +6,8 @@ import io
 import json
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import typer
@@ -15,20 +17,25 @@ from rich.table import Table
 
 from alph.core import (
     AlphConfig,
+    RegistryEntry,
     collect_registries,
     create_node,
+    effective_mode,
     extract_frontmatter,
     init_pool,
     init_registry,
+    is_remote_registry,
     list_config_paths,
     list_nodes,
     list_pools,
     load_config,
+    parse_remote_registry,
     resolve_default_pool,
     resolve_pool_name,
     show_node,
     validate_node,
 )
+from alph.remote import provider_for_url, resolve_pool_readonly
 
 _help_settings = {"help_option_names": ["-h", "--help"]}
 app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.", context_settings=_help_settings)
@@ -101,34 +108,104 @@ def _load_cli_config(cwd: Path | None = None) -> AlphConfig:
     )
 
 
-def _require_pool(pool_flag: str | None, cfg: AlphConfig) -> Path:
-    """Resolve pool path from flag or config default. Exits with error if neither is set.
+def _require_pool(pool_flag: str | None, cfg: AlphConfig) -> str:
+    """Resolve pool to a string (path or remote URL). Exits on error.
 
-    The flag value is resolved in order:
-    1. Absolute path or existing relative path — used as-is.
-    2. Pool name found in a registry — resolved to registry_home/name.
-    3. Falls back to default_registry/default_pool from config.
+    Returns the raw string so callers can detect remote URLs. The flag
+    value is resolved in order:
+    1. Remote URL (git@/https://) — returned as-is.
+    2. Absolute path or existing relative path — returned as-is.
+    3. Pool name found in a registry — resolved to registry_home/name string.
+    4. Falls back to default_registry/default_pool from config.
     """
     if pool_flag is not None:
+        if is_remote_registry(pool_flag):
+            return pool_flag
         p = Path(pool_flag)
         if p.is_absolute() or p.exists():
-            return p
+            return str(p)
         by_name = resolve_pool_name(pool_flag, cfg)
         if by_name is not None:
-            return by_name
+            return str(by_name)
         console.print(
             f"[red]error:[/red] --pool '{pool_flag}' is not a path and was not found "
             "as a pool name in any known registry"
         )
         raise typer.Exit(code=1)
+
+    # No flag — check default pool. If the default registry is remote,
+    # we need to return the full remote URL + pool name.
+    if cfg.default_registry and cfg.default_pool:
+        entry = cfg.registries.get(cfg.default_registry)
+        if entry and is_remote_registry(entry.pool_home):
+            ref = parse_remote_registry(entry.pool_home)
+            pool_subpath = (
+                f"{ref.subpath}/{cfg.default_pool}" if ref.subpath
+                else cfg.default_pool
+            )
+            return f"{ref.remote_url}:/{pool_subpath}"
+
     resolved = resolve_default_pool(cfg)
     if resolved is None:
         console.print(
-            "[red]error:[/red] --pool required, or set default_registry + default_pool "
-            "and registries in ~/.config/alph/config.yaml"
+            "[red]error:[/red] --pool required, or set default_registry + "
+            "default_pool and registries in ~/.config/alph/config.yaml"
         )
         raise typer.Exit(code=1)
-    return resolved
+    return str(resolved)
+
+
+def _find_entry_for_pool(pool_str: str, cfg: AlphConfig) -> RegistryEntry | None:
+    """Find the RegistryEntry that owns a pool, if any."""
+    for entry in cfg.registries.values():
+        if is_remote_registry(entry.pool_home) and is_remote_registry(pool_str):
+            return entry
+        if not is_remote_registry(entry.pool_home):
+            pool_home = Path(entry.pool_home)
+            try:
+                if Path(pool_str).is_relative_to(pool_home):
+                    return entry
+            except (ValueError, TypeError):
+                pass
+    return None
+
+
+@contextmanager
+def _pool_context(
+    pool_str: str, cfg: AlphConfig, *, writable: bool = False,
+) -> Iterator[Path]:
+    """Yield a local Path for pool operations.
+
+    For local pools, yields the path directly. For remote RO pools,
+    fetches files to a tmpdir via the provider API and yields that path.
+    For remote RW pools, raises an error (clone-based RW is Phase D).
+    """
+    if not is_remote_registry(pool_str):
+        yield Path(pool_str)
+        return
+
+    entry = _find_entry_for_pool(pool_str, cfg)
+    mode = effective_mode(entry) if entry else "ro"
+
+    if writable and mode == "ro":
+        console.print(
+            "[red]error:[/red] registry is read-only. "
+            "Set mode: rw in config to enable writes."
+        )
+        raise typer.Exit(code=1)
+
+    if writable:
+        console.print(
+            "[red]error:[/red] write operations on remote registries "
+            "require a local clone (not yet implemented)."
+        )
+        raise typer.Exit(code=1)
+
+    # RO path — fetch via provider API.
+    ref = parse_remote_registry(pool_str)
+    provider = provider_for_url(ref.remote_url)
+    with resolve_pool_readonly(provider, ref.subpath) as pool_path:
+        yield pool_path
 
 
 def _require_creator(creator_flag: str | None, cfg: AlphConfig) -> str:
@@ -326,18 +403,19 @@ def cmd_add(
     """Create a context node in a pool."""
     _apply_verbose(verbose)
     cfg = _load_cli_config()
-    resolved_pool = _require_pool(pool, cfg)
+    pool_str = _require_pool(pool, cfg)
     resolved_creator = _require_creator(creator, cfg)
-    result = create_node(
-        pool_path=resolved_pool,
-        source="cli",
-        node_type=node_type,
-        context=context,
-        creator=resolved_creator,
-        content=content,
-        status=status,
-        auto_commit=cfg.auto_commit,
-    )
+    with _pool_context(pool_str, cfg, writable=True) as resolved_pool:
+        result = create_node(
+            pool_path=resolved_pool,
+            source="cli",
+            node_type=node_type,
+            context=context,
+            creator=resolved_creator,
+            content=content,
+            status=status,
+            auto_commit=cfg.auto_commit,
+        )
     if result.duplicate:
         console.print(
             f"[yellow]duplicate:[/yellow] node already exists "
@@ -370,9 +448,9 @@ def cmd_list(
     """
     _apply_verbose(verbose)
     cfg = _load_cli_config()
-    resolved_pool = _require_pool(pool, cfg)
+    pool_str = _require_pool(pool, cfg)
 
-    # Flatten any comma-separated values passed to -s (e.g. -s archived,suppressed).
+    # Flatten any comma-separated values passed to -s.
     raw: set[str] = set()
     for token in status:
         raw.update(v.strip() for v in token.split(",") if v.strip())
@@ -384,7 +462,10 @@ def cmd_list(
     else:
         include_statuses = raw
 
-    summaries = list_nodes(resolved_pool, include_statuses=include_statuses)
+    with _pool_context(pool_str, cfg) as resolved_pool:
+        summaries = list_nodes(
+            resolved_pool, include_statuses=include_statuses,
+        )
 
     fmt = output.lower().strip()
 
@@ -411,21 +492,31 @@ def cmd_list(
         writer = csv.writer(buf)
         writer.writerow(["id", "type", "status", "context", "timestamp"])
         for s in summaries:
-            writer.writerow([s.node_id, s.node_type, s.status, s.context, s.timestamp])
+            writer.writerow([
+                s.node_id, s.node_type, s.status,
+                s.context, s.timestamp,
+            ])
         print(buf.getvalue(), end="")
         return
 
     # Console output (default).
-    pool_name = resolved_pool.name
+    _display_pool = pool_str
+    pool_name = Path(pool_str).name if not is_remote_registry(pool_str) else pool_str
     registry_label = None
-    for reg_id, entry in cfg.registries.items():
-        if resolved_pool.parent == Path(entry.pool_home):
-            registry_label = reg_id
-            break
+    if not is_remote_registry(pool_str):
+        rp = Path(pool_str)
+        for reg_id, entry in cfg.registries.items():
+            if not is_remote_registry(entry.pool_home) and rp.parent == Path(entry.pool_home):
+                registry_label = reg_id
+                pool_name = rp.name
+                break
     if registry_label:
-        console.print(f"[dim]registry:[/dim] {registry_label}  [dim]pool:[/dim] {pool_name}")
+        console.print(
+            f"[dim]registry:[/dim] {registry_label}  "
+            f"[dim]pool:[/dim] {pool_name}"
+        )
     else:
-        console.print(f"[dim]pool:[/dim] {resolved_pool}")
+        console.print(f"[dim]pool:[/dim] {_display_pool}")
 
     if not summaries:
         console.print("no nodes found.")
@@ -438,7 +529,9 @@ def cmd_list(
     table.add_column("timestamp", width=22)
     for s in summaries:
         display_type = "snap" if s.node_type == "snapshot" else s.node_type
-        table.add_row(s.node_id, display_type, s.status, s.context, s.timestamp)
+        table.add_row(
+            s.node_id, display_type, s.status, s.context, s.timestamp,
+        )
     console.print(table)
 
 
@@ -451,8 +544,9 @@ def cmd_show(
     """Display full node content formatted for terminal."""
     _apply_verbose(verbose)
     cfg = _load_cli_config()
-    resolved_pool = _require_pool(pool, cfg)
-    detail = show_node(resolved_pool, node_id)
+    pool_str = _require_pool(pool, cfg)
+    with _pool_context(pool_str, cfg) as resolved_pool:
+        detail = show_node(resolved_pool, node_id)
     if detail is None:
         console.print(f"[red]not found:[/red] {node_id}")
         raise typer.Exit(code=1)
@@ -478,37 +572,49 @@ def cmd_validate(
     """Check all nodes in a pool against schema."""
     _apply_verbose(verbose)
     cfg = _load_cli_config()
-    resolved_pool = _require_pool(pool, cfg)
+    pool_str = _require_pool(pool, cfg)
 
-    if not resolved_pool.exists():
-        console.print(f"[red]error:[/red] pool not found: {resolved_pool}")
+    # For local pools, check existence before entering context.
+    if not is_remote_registry(pool_str) and not Path(pool_str).exists():
+        console.print(f"[red]error:[/red] pool not found: {pool_str}")
         raise typer.Exit(code=1)
 
     errors_found = False
     node_count = 0
-    for subdir in ("snapshots", "live"):
-        directory = resolved_pool / subdir
-        if not directory.exists():
-            continue
-        for node_file in sorted(directory.glob("*.md")):
-            node_count += 1
-            frontmatter = extract_frontmatter(node_file.read_text())
-            if frontmatter is None:
-                console.print(f"[red]no frontmatter:[/red] {node_file.name}")
-                errors_found = True
+    with _pool_context(pool_str, cfg) as resolved_pool:
+        for subdir in ("snapshots", "live"):
+            directory = resolved_pool / subdir
+            if not directory.exists():
                 continue
-            vresult = validate_node(frontmatter)
-            if not vresult.valid:
-                errors_found = True
-                for error in vresult.errors:
-                    console.print(f"[red]invalid:[/red] {node_file.name}: {error}")
-    pool_name = resolved_pool.name
+            for node_file in sorted(directory.glob("*.md")):
+                node_count += 1
+                frontmatter = extract_frontmatter(node_file.read_text())
+                if frontmatter is None:
+                    console.print(
+                        f"[red]no frontmatter:[/red] {node_file.name}",
+                    )
+                    errors_found = True
+                    continue
+                vresult = validate_node(frontmatter)
+                if not vresult.valid:
+                    errors_found = True
+                    for error in vresult.errors:
+                        console.print(
+                            f"[red]invalid:[/red] {node_file.name}: {error}",
+                        )
+    pool_name = (
+        Path(pool_str).name if not is_remote_registry(pool_str)
+        else pool_str
+    )
     if errors_found:
         raise typer.Exit(code=1)
     if node_count == 0:
         console.print(f"no nodes found in pool {pool_name}.")
     else:
-        console.print(f"[green]{node_count} node{'s' if node_count != 1 else ''} in pool {pool_name} valid.[/green]")
+        console.print(
+            f"[green]{node_count} node{'s' if node_count != 1 else ''}"
+            f" in pool {pool_name} valid.[/green]"
+        )
 
 
 @config_app.command("list")
