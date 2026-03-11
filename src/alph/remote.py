@@ -356,11 +356,11 @@ def clone_remote_registry(
     clone_dir: Path,
     *,
     depth: int = 1,
-) -> Path:
+) -> bool:
     """Clone a remote git repository for RW access.
 
     If the clone directory already exists and contains a ``.git`` dir,
-    this is a no-op and returns the existing path.
+    this is a no-op.
 
     Args:
         remote_url: Git remote URL.
@@ -368,14 +368,14 @@ def clone_remote_registry(
         depth: Clone depth (default 1 for shallow clone).
 
     Returns:
-        Path to the clone directory.
+        True if a new clone was created, False if one already existed.
 
     Raises:
         RuntimeError: If the clone fails.
     """
     if (clone_dir / ".git").is_dir():
         logger.debug("clone already exists: %s", clone_dir)
-        return clone_dir
+        return False
 
     clone_dir.mkdir(parents=True, exist_ok=True)
 
@@ -387,7 +387,7 @@ def clone_remote_registry(
             f"git clone failed (exit {result.returncode}): "
             f"{result.stderr.strip()}"
         )
-    return clone_dir
+    return True
 
 
 def pull_remote_registry(clone_dir: Path) -> None:

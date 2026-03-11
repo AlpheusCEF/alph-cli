@@ -218,17 +218,35 @@ def _require_pool(pool_flag: str | None, cfg: AlphConfig) -> str:
 
 
 def _find_entry_for_pool(pool_str: str, cfg: AlphConfig) -> RegistryEntry | None:
-    """Find the RegistryEntry that owns a pool, if any."""
+    """Find the RegistryEntry that owns a pool, if any.
+
+    When multiple remote registries share the same URL, prefers the RW
+    entry so that write operations succeed when an RW config exists.
+    """
+    if is_remote_registry(pool_str):
+        ref_pool = parse_remote_registry(pool_str)
+        match: RegistryEntry | None = None
+        for entry in cfg.registries.values():
+            if not is_remote_registry(entry.pool_home):
+                continue
+            ref_entry = parse_remote_registry(entry.pool_home)
+            if ref_entry.remote_url != ref_pool.remote_url:
+                continue
+            if match is None or (
+                effective_mode(entry) == "rw" and effective_mode(match) != "rw"
+            ):
+                match = entry
+        return match
+
     for entry in cfg.registries.values():
-        if is_remote_registry(entry.pool_home) and is_remote_registry(pool_str):
-            return entry
-        if not is_remote_registry(entry.pool_home):
-            pool_home = Path(entry.pool_home)
-            try:
-                if Path(pool_str).is_relative_to(pool_home):
-                    return entry
-            except (ValueError, TypeError):
-                pass
+        if is_remote_registry(entry.pool_home):
+            continue
+        pool_home = Path(entry.pool_home)
+        try:
+            if Path(pool_str).is_relative_to(pool_home):
+                return entry
+        except (ValueError, TypeError):
+            pass
     return None
 
 
@@ -271,8 +289,9 @@ def _pool_context(
         return
 
     # RO path — fetch via provider API.
+    branch = entry.branch if entry and entry.branch else "HEAD"
     provider = provider_for_url(ref.remote_url)
-    with resolve_pool_readonly(provider, ref.subpath) as pool_path:
+    with resolve_pool_readonly(provider, ref.subpath, ref=branch) as pool_path:
         yield pool_path
 
 
@@ -542,11 +561,14 @@ def registry_clone(
         or default_clone_dir(ref.remote_url)
     )
     try:
-        clone_remote_registry(ref.remote_url, target)
+        created = clone_remote_registry(ref.remote_url, target)
     except RuntimeError as exc:
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(code=1) from None
-    console.print(f"[green]cloned:[/green] {reg_id} -> {target}")
+    if created:
+        console.print(f"[green]cloned:[/green] {reg_id} -> {target}")
+    else:
+        console.print(f"[green]ok:[/green] {reg_id} already cloned at {target}")
 
 
 @registry_app.command("pull")
@@ -606,6 +628,77 @@ def registry_pull(
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(code=1) from None
     console.print(f"[green]pulled:[/green] {reg_id} ({clone_dir})")
+
+
+@registry_app.command("status")
+def registry_status(
+    registry_id: str = typer.Argument(
+        ..., help="Registry ID or name to inspect.",
+    ),
+    cwd: Path | None = typer.Option(
+        None, "--cwd", hidden=True,
+        help="Working directory for config lookup.",
+    ),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Show status of a registry — mode, clone state, and config details."""
+    _apply_verbose(verbose)
+    resolved_cwd = cwd if cwd is not None else Path.cwd()
+    cfg = _load_cli_config(cwd=resolved_cwd)
+
+    from alph.core import find_registry_config
+
+    found = find_registry_config(registry_id, cfg=cfg)
+    if found is None:
+        known = ", ".join(cfg.registries.keys()) or "(none)"
+        console.print(
+            f"[red]error:[/red] {registry_id} not found. "
+            f"Known registries: {known}"
+        )
+        raise typer.Exit(code=1)
+
+    reg_id, _ = found
+    entry = cfg.registries[reg_id]
+    mode = effective_mode(entry)
+
+    lines: list[str] = [f"registry:    {reg_id}"]
+    lines.append(f"mode:        {mode}")
+
+    if is_remote_registry(entry.pool_home):
+        ref = parse_remote_registry(entry.pool_home)
+        lines.append(f"remote:      {ref.remote_url}")
+        if ref.subpath:
+            lines.append(f"subpath:     {ref.subpath}")
+        if entry.branch:
+            lines.append(f"branch:      {entry.branch}")
+
+        clone_dir = (
+            Path(entry.clone_path) if entry.clone_path
+            else default_clone_dir(ref.remote_url)
+        )
+        lines.append(f"clone_path:  {clone_dir}")
+
+        if (clone_dir / ".git").is_dir():
+            # Check working tree state.
+            import subprocess
+            git_status = subprocess.run(
+                ["git", "-C", str(clone_dir), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=10,
+            )
+            dirty = bool(git_status.stdout.strip()) if git_status.returncode == 0 else False
+            state = "cloned (dirty)" if dirty else "cloned (clean)"
+            lines.append(f"clone_state: {state}")
+        else:
+            lines.append("clone_state: not cloned")
+
+        lines.append(f"auto_push:   {str(entry.auto_push).lower()}")
+    else:
+        pool_home = Path(entry.pool_home)
+        lines.append(f"path:        {pool_home}")
+        exists = pool_home.is_dir()
+        lines.append(f"exists:      {str(exists).lower()}")
+
+    console.print("\n".join(lines))
 
 
 @pool_app.command("init")

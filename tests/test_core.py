@@ -1344,3 +1344,34 @@ def test_load_config_reads_clone_path_from_yaml(tmp_path: Path) -> None:
     })
     cfg = load_config(global_config_dir=global_dir)
     assert cfg.registries["remote-reg"].clone_path == "/tmp/my-clone"
+
+
+def test_load_config_reads_branch_from_yaml(tmp_path: Path) -> None:
+    """load_config picks up branch from registry config YAML."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+                "branch": "seeded",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].branch == "seeded"
+
+
+def test_load_config_branch_defaults_empty(tmp_path: Path) -> None:
+    """load_config defaults branch to empty string when omitted."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].branch == ""

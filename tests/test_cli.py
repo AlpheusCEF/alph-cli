@@ -594,6 +594,41 @@ def test_add_remote_ro_pool_errors(tmp_path: Path, monkeypatch) -> None:  # type
     assert "read-only" in result.output
 
 
+def test_add_remote_rw_pool_matches_correct_registry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph add against RW remote finds the RW entry, not an RO entry for the same URL."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    pool_in_clone = clone_dir / "data" / "vehicles"
+    (pool_in_clone / "snapshots").mkdir(parents=True)
+    (pool_in_clone / "live").mkdir(parents=True)
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "creator": "test@example.com",
+        "registries": {
+            "ro-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Read-only.",
+                "mode": "ro",
+            },
+            "rw-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Read-write.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    with patch("alph.cli.clone_remote_registry", return_value=True):
+        result = runner.invoke(app, [
+            "add", "-c", "Should succeed via RW entry.",
+            "--pool", "git@github.com:org/repo.git:/data/vehicles",
+            "--creator", "test@example.com",
+        ])
+    assert result.exit_code == 0, f"Expected success but got: {result.output}"
+    assert "node created" in result.output
+
+
 def test_list_remote_default_pool(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """alph list resolves default pool from a remote registry."""
     global_dir = tmp_path / "global"
@@ -613,6 +648,36 @@ def test_list_remote_default_pool(tmp_path: Path, monkeypatch) -> None:  # type:
         result = runner.invoke(app, ["list"])
     assert result.exit_code == 0
     assert "abc123def456" in result.output
+
+
+def test_list_remote_uses_branch_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph list passes configured branch to resolve_pool_readonly."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "default_registry": "remote-reg",
+        "default_pool": "vehicles",
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/reg",
+                "context": "Remote test.",
+                "branch": "seeded",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_prov = _mock_provider()
+    with patch("alph.cli.provider_for_url", return_value=mock_prov), \
+            patch("alph.cli.resolve_pool_readonly") as mock_resolve:
+        # Set up the context manager mock to yield a real pool path.
+        pool_dir = tmp_path / "pool"
+        (pool_dir / "snapshots").mkdir(parents=True)
+        (pool_dir / "live").mkdir(parents=True)
+        mock_resolve.return_value.__enter__ = lambda s: pool_dir
+        mock_resolve.return_value.__exit__ = lambda s, *a: None
+        runner.invoke(app, ["list"])
+    mock_resolve.assert_called_once()
+    call_kwargs = mock_resolve.call_args.kwargs
+    assert call_kwargs.get("ref") == "seeded"
 
 
 def test_registry_list_shows_mode_column(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -729,6 +794,30 @@ def test_registry_clone_calls_git_clone(tmp_path: Path, monkeypatch) -> None:  #
     assert "cloned" in result.output
 
 
+def test_registry_clone_already_exists(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry clone shows 'already cloned' when clone exists."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote.",
+                "mode": "rw",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "clone", "remote-reg",
+        "--clone-path", str(clone_dir),
+        "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code == 0
+    assert "already cloned" in result.output
+
+
 def test_registry_clone_errors_for_local(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """alph registry clone errors when the registry is local."""
     global_dir = tmp_path / "global"
@@ -826,6 +915,103 @@ def test_registry_pull_errors_for_local(tmp_path: Path, monkeypatch) -> None:  #
 
 
 # ---------------------------------------------------------------------------
+# registry status
+# ---------------------------------------------------------------------------
+
+
+def test_registry_status_remote_cloned(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry status shows full info for a cloned remote registry."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+                "branch": "seeded",
+                "auto_push": True,
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = ""
+    with patch("subprocess.run", return_value=mock_result):
+        result = runner.invoke(app, [
+            "registry", "status", "remote-reg", "--cwd", str(tmp_path),
+        ])
+    assert result.exit_code == 0
+    assert "remote-reg" in result.output
+    assert "rw" in result.output
+    assert "git@github.com:org/repo.git" in result.output
+    assert "data" in result.output
+    assert "seeded" in result.output
+    assert "cloned (clean)" in result.output
+    assert "auto_push:   true" in result.output
+
+
+def test_registry_status_remote_not_cloned(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry status shows 'not cloned' when no local clone exists."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "status", "remote-reg", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code == 0
+    assert "not cloned" in result.output
+    assert "ro" in result.output
+
+
+def test_registry_status_local(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry status shows path and exists for local registries."""
+    pool_home = tmp_path / "registry"
+    pool_home.mkdir()
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "local-reg": {
+                "pool_home": str(pool_home),
+                "context": "Local.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "status", "local-reg", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code == 0
+    assert "local-reg" in result.output
+    assert "rw" in result.output
+    assert "path:" in result.output
+    assert "exists:" in result.output
+    assert "true" in result.output
+
+
+def test_registry_status_unknown(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry status errors for unknown registry."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {"registries": {}})
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "status", "nope", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "not found" in result.output
+
+
+# ---------------------------------------------------------------------------
 # RW clone-based pool context
 # ---------------------------------------------------------------------------
 
@@ -852,7 +1038,7 @@ def test_add_remote_rw_pool_uses_clone(tmp_path: Path, monkeypatch) -> None:  # 
     })
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     # Mock clone_remote_registry to be a no-op (clone already exists).
-    with patch("alph.cli.clone_remote_registry", return_value=clone_dir):
+    with patch("alph.cli.clone_remote_registry", return_value=True):
         result = runner.invoke(app, [
             "add", "-c", "Test node via RW.",
             "--pool", "git@github.com:org/repo.git:/data/vehicles",
@@ -891,7 +1077,7 @@ def test_list_pull_flag_triggers_pull(tmp_path: Path, monkeypatch) -> None:  # t
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     mock_pull_result = MagicMock()
     mock_pull_result.returncode = 0
-    with patch("alph.cli.clone_remote_registry", return_value=clone_dir), \
+    with patch("alph.cli.clone_remote_registry", return_value=True), \
             patch("alph.cli.pull_remote_registry") as mock_pull:
         result = runner.invoke(app, [
             "list",

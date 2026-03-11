@@ -423,7 +423,7 @@ def test_clone_remote_registry_runs_git_clone(tmp_path: Path) -> None:
     mock_result.returncode = 0
     with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
         result = clone_remote_registry("git@github.com:org/repo.git", clone_dir)
-    assert result == clone_dir
+    assert result is True
     call_args = mock_run.call_args[0][0]
     assert call_args[0] == "git"
     assert call_args[1] == "clone"
@@ -438,7 +438,7 @@ def test_clone_remote_registry_skips_existing(tmp_path: Path) -> None:
     with patch("alph.remote.subprocess.run") as mock_run:
         result = clone_remote_registry("git@github.com:org/repo.git", clone_dir)
     mock_run.assert_not_called()
-    assert result == clone_dir
+    assert result is False
 
 
 def test_clone_remote_registry_raises_on_failure(tmp_path: Path) -> None:
