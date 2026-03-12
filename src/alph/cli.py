@@ -40,6 +40,7 @@ from alph.core import (
 from alph.remote import (
     clone_remote_registry,
     default_clone_dir,
+    fetch_remote_pools_cached,
     provider_for_url,
     pull_remote_registry,
     push_remote_registry,
@@ -91,6 +92,90 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _complete_registry_id(incomplete: str) -> list[str]:
+    """Return registry IDs (+ 'all') matching the incomplete prefix."""
+    try:
+        cfg = _load_cli_config()
+    except Exception:
+        return []
+    candidates = ["all", *cfg.registries.keys()]
+    return [c for c in candidates if c.startswith(incomplete)]
+
+
+def _effective_completion_remote(entry: RegistryEntry, cfg: AlphConfig) -> bool:
+    """Return whether remote completion is enabled for this registry entry.
+
+    Per-registry setting takes priority; None means inherit the global default.
+    """
+    if entry.completion_remote is not None:
+        return entry.completion_remote
+    return cfg.completion_remote
+
+
+def _local_pool_home_for_entry(entry: RegistryEntry) -> Path | None:
+    """Return the local directory to scan for pool names, or None if unavailable.
+
+    - Local registries: pool_home directly.
+    - RW remote with an existing clone: clone_path / subpath.
+    - RO remote (or RW without a clone): None (no local scan possible).
+    """
+    if not is_remote_registry(entry.pool_home):
+        return Path(entry.pool_home)
+    if effective_mode(entry) == "rw" and entry.clone_path:
+        clone = Path(entry.clone_path)
+        if clone.is_dir():
+            ref = parse_remote_registry(entry.pool_home)
+            return clone / ref.subpath if ref.subpath else clone
+    return None
+
+
+def _complete_pool(incomplete: str) -> list[str]:
+    """Return pool names matching the incomplete prefix.
+
+    - Local registries and RW remote clones: scanned from disk (fast, no network).
+    - RO remote registries: queried via the forge API when ``completion_remote``
+      is enabled (global or per-registry), with results cached for
+      ``completion_cache_ttl`` seconds (default 60).  Off by default to avoid
+      unexpected network calls during tab completion.
+
+    Any error (config, I/O, network) is silently swallowed so a failed
+    completion does not interrupt the user's shell.
+    """
+    try:
+        cfg = _load_cli_config()
+    except Exception:
+        return []
+
+    names: list[str] = []
+    for entry in cfg.registries.values():
+        pool_home = _local_pool_home_for_entry(entry)
+        if pool_home is not None:
+            # Local path or RW clone — scan disk.
+            if not pool_home.is_dir():
+                continue
+            for candidate in sorted(pool_home.iterdir()):
+                if not candidate.is_dir():
+                    continue
+                if (candidate / "snapshots").is_dir() or (candidate / "live").is_dir():
+                    names.append(candidate.name)
+        elif _effective_completion_remote(entry, cfg):
+            # RO remote with completion enabled — fetch via API (cached).
+            try:
+                ref = parse_remote_registry(entry.pool_home)
+                prov = provider_for_url(ref.remote_url)
+                remote_pools = fetch_remote_pools_cached(
+                    prov,
+                    ref.subpath,
+                    cache_key=entry.pool_home,
+                    ttl=cfg.completion_cache_ttl,
+                )
+                names.extend(remote_pools)
+            except Exception:
+                pass  # Network or auth error — skip this registry silently.
+
+    return [n for n in names if n.startswith(incomplete)]
+
+
 @app.callback()
 def _main(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging.", is_eager=False),
@@ -99,6 +184,7 @@ def _main(
         None, "--registry", "--reg", "-r",
         help="Override registry: ID, name, or remote git URL. "
              "Scopes pool resolution to this registry for this invocation.",
+        autocompletion=_complete_registry_id,
     ),
     branch: str | None = typer.Option(
         None, "--branch",
@@ -571,6 +657,7 @@ def _check_single_registry(reg_id: str, cfg: AlphConfig) -> None:
 def registry_check(
     registry_id: str | None = typer.Argument(
         None, help="Registry ID, name, or 'all'. Defaults to default_registry.",
+        autocompletion=_complete_registry_id,
     ),
     cwd: Path | None = typer.Option(
         None, "--cwd", hidden=True,
@@ -621,6 +708,7 @@ def registry_check(
 def registry_clone(
     registry_id: str | None = typer.Argument(
         None, help="Registry ID or name to clone. Defaults to default_registry.",
+        autocompletion=_complete_registry_id,
     ),
     clone_path: Path | None = typer.Option(
         None, "--clone-path",
@@ -689,6 +777,7 @@ def registry_clone(
 def registry_pull(
     registry_id: str | None = typer.Argument(
         None, help="Registry ID or name to pull. Defaults to default_registry.",
+        autocompletion=_complete_registry_id,
     ),
     cwd: Path | None = typer.Option(
         None, "--cwd", hidden=True,
@@ -749,6 +838,7 @@ def registry_pull(
 def registry_push(
     registry_id: str | None = typer.Argument(
         None, help="Registry ID or name to push. Defaults to default_registry.",
+        autocompletion=_complete_registry_id,
     ),
     cwd: Path | None = typer.Option(
         None, "--cwd", hidden=True,
@@ -870,6 +960,7 @@ def _status_single_registry(reg_id: str, cfg: AlphConfig) -> None:
 def registry_status(
     registry_id: str | None = typer.Argument(
         None, help="Registry ID or name to inspect. Defaults to default_registry. Use 'all' to show every registry.",
+        autocompletion=_complete_registry_id,
     ),
     cwd: Path | None = typer.Option(
         None, "--cwd", hidden=True,
@@ -920,7 +1011,7 @@ def _pool_default(ctx: typer.Context) -> None:
 
 @pool_app.command("init")
 def pool_init(
-    registry: str | None = typer.Option(None, "--registry", "--reg", "-r", help="Registry ID or name. Defaults to default_registry from config."),
+    registry: str | None = typer.Option(None, "--registry", "--reg", "-r", help="Registry ID or name. Defaults to default_registry from config.", autocompletion=_complete_registry_id),
     name: str = typer.Option(..., "--name", help="Pool name (machine identifier)."),
     context: str = typer.Option(..., "--context", "-c", help="Human/LLM-readable description."),
     pool_type: str = typer.Option("subdir", "--type", help="Pool type: 'subdir' (pool is a subdirectory of the registry home) or 'repo' (standalone git repository)."),
@@ -983,7 +1074,7 @@ def pool_init(
 
 @pool_app.command("list")
 def pool_list(
-    registry: str | None = typer.Option(None, "--registry", "--reg", "-r", help="Registry ID or name. Defaults to default_registry from config."),
+    registry: str | None = typer.Option(None, "--registry", "--reg", "-r", help="Registry ID or name. Defaults to default_registry from config.", autocompletion=_complete_registry_id),
     cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for config lookup."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
@@ -1035,7 +1126,7 @@ def pool_list(
 @app.command("add")
 def cmd_add(
     context: str = typer.Option(..., "-c", "--context", help="Context description for this node."),
-    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config.", autocompletion=_complete_pool),
     creator: str | None = typer.Option(None, "--creator", help="Creator email address. Defaults to creator from config."),
     node_type: str = typer.Option("snapshot", "--type", help="'snapshot' (or 'snap') or 'live'."),
     content: str = typer.Option("", "--content", help="Optional Markdown body."),
@@ -1071,7 +1162,7 @@ def cmd_add(
 
 @app.command("list")
 def cmd_list(
-    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config.", autocompletion=_complete_pool),
     status: list[str] = typer.Option(
         [],
         "-s",
@@ -1183,7 +1274,7 @@ def cmd_list(
 @app.command("show")
 def cmd_show(
     node_id: str = typer.Argument(..., help="Node ID to display."),
-    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config.", autocompletion=_complete_pool),
     pull: bool = typer.Option(False, "--pull", help="Pull latest changes before showing (RW clones only)."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
@@ -1213,7 +1304,7 @@ def cmd_show(
 
 @app.command("validate")
 def cmd_validate(
-    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name. Defaults to default_pool from config.", autocompletion=_complete_pool),
     pull: bool = typer.Option(False, "--pull", help="Pull latest changes before validating (RW clones only)."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:

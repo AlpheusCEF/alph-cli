@@ -1790,3 +1790,264 @@ def test_auto_push_failure_prints_error_and_recovery_hint(tmp_path: Path, monkey
         ])
     assert "error" in result.output.lower()
     assert "registry push" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Tab completion functions
+# ---------------------------------------------------------------------------
+
+
+def test_complete_registry_id_returns_all_registry_ids(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """_complete_registry_id returns all registry IDs from config."""
+    from alph.cli import _complete_registry_id
+
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "household": {"pool_home": str(tmp_path / "reg1"), "context": "Home."},
+            "work": {"pool_home": str(tmp_path / "reg2"), "context": "Work."},
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    monkeypatch.chdir(tmp_path)
+
+    completions = _complete_registry_id("")
+    assert "household" in completions
+    assert "work" in completions
+    assert "all" in completions
+
+
+def test_complete_registry_id_filters_by_prefix(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """_complete_registry_id filters to IDs matching the incomplete prefix."""
+    from alph.cli import _complete_registry_id
+
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "household": {"pool_home": str(tmp_path / "reg1"), "context": "Home."},
+            "work": {"pool_home": str(tmp_path / "reg2"), "context": "Work."},
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    monkeypatch.chdir(tmp_path)
+
+    completions = _complete_registry_id("ho")
+    assert "household" in completions
+    assert "work" not in completions
+
+
+def test_complete_registry_id_returns_only_all_when_no_registries(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """_complete_registry_id returns only 'all' when no registries are configured."""
+    from alph.cli import _complete_registry_id
+
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(tmp_path / "nonexistent"))
+    monkeypatch.chdir(tmp_path)
+
+    completions = _complete_registry_id("")
+    assert completions == ["all"]
+
+
+def test_complete_pool_returns_pool_names_from_local_registries(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """_complete_pool returns pool names discovered on disk under local registries."""
+    from alph.cli import _complete_pool
+
+    reg_home = tmp_path / "registry"
+    for pool in ("vehicles", "appliances"):
+        (reg_home / pool / "snapshots").mkdir(parents=True)
+        (reg_home / pool / "live").mkdir(parents=True)
+
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "default_registry": "household",
+        "registries": {
+            "household": {"pool_home": str(reg_home), "context": "Home."},
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    monkeypatch.chdir(tmp_path)
+
+    completions = _complete_pool("")
+    assert "vehicles" in completions
+    assert "appliances" in completions
+
+
+def test_complete_pool_filters_by_prefix(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """_complete_pool filters pool names by the incomplete prefix."""
+    from alph.cli import _complete_pool
+
+    reg_home = tmp_path / "registry"
+    for pool in ("vehicles", "appliances"):
+        (reg_home / pool / "snapshots").mkdir(parents=True)
+        (reg_home / pool / "live").mkdir(parents=True)
+
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "household": {"pool_home": str(reg_home), "context": "Home."},
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    monkeypatch.chdir(tmp_path)
+
+    completions = _complete_pool("ve")
+    assert "vehicles" in completions
+    assert "appliances" not in completions
+
+
+def test_complete_pool_returns_empty_on_error(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """_complete_pool returns [] when config cannot be loaded."""
+    from alph.cli import _complete_pool
+
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(tmp_path / "nonexistent"))
+    monkeypatch.chdir(tmp_path)
+
+    completions = _complete_pool("")
+    assert completions == []
+
+
+def test_complete_pool_includes_rw_remote_clone_pools(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """_complete_pool scans the local clone dir for RW remote registries."""
+    from alph.cli import _complete_pool
+
+    clone_dir = tmp_path / "clone"
+    subpath_dir = clone_dir / "registry"
+    for pool in ("sensors", "actuators"):
+        (subpath_dir / pool / "snapshots").mkdir(parents=True)
+
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-rw": {
+                "pool_home": "git@github.com:org/repo.git:/registry",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+                "context": "Remote RW.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    monkeypatch.chdir(tmp_path)
+
+    completions = _complete_pool("")
+    assert "sensors" in completions
+    assert "actuators" in completions
+
+
+def test_complete_pool_skips_ro_remote_by_default(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """_complete_pool skips RO remote registries when completion_remote is False (default)."""
+    from alph.cli import _complete_pool
+
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-ro": {
+                "pool_home": "git@github.com:org/repo.git:/registry",
+                "context": "Remote RO.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    monkeypatch.chdir(tmp_path)
+
+    completions = _complete_pool("")
+    assert completions == []
+
+
+def test_complete_pool_uses_remote_api_for_ro_when_completion_remote_enabled(
+    tmp_path: Path, monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    """_complete_pool calls the cached remote API for RO registries when completion_remote=True."""
+    from unittest.mock import patch
+
+    from alph.cli import _complete_pool
+
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-ro": {
+                "pool_home": "git@github.com:org/repo.git:/registry",
+                "completion_remote": True,
+                "context": "Remote RO.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    monkeypatch.chdir(tmp_path)
+
+    with patch("alph.cli.fetch_remote_pools_cached", return_value=["sensors", "actuators"]):
+        completions = _complete_pool("")
+
+    assert "sensors" in completions
+    assert "actuators" in completions
+
+
+def test_complete_pool_ro_remote_completion_remote_disabled_skips_api(
+    tmp_path: Path, monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    """_complete_pool does not call the remote API when completion_remote is False."""
+    from unittest.mock import patch
+
+    from alph.cli import _complete_pool
+
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-ro": {
+                "pool_home": "git@github.com:org/repo.git:/registry",
+                "context": "Remote RO.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    monkeypatch.chdir(tmp_path)
+
+    with patch("alph.cli.fetch_remote_pools_cached") as mock_cached:
+        completions = _complete_pool("")
+
+    mock_cached.assert_not_called()
+    assert completions == []
+
+
+def test_effective_completion_remote_per_registry_overrides_global(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Per-registry completion_remote=True enables that registry even when global is False."""
+    from alph.cli import _effective_completion_remote
+    from alph.core import AlphConfig, RegistryEntry
+
+    cfg = AlphConfig(
+        completion_remote=False,
+        registries={
+            "remote": RegistryEntry(pool_home="git@github.com:o/r.git", completion_remote=True),
+        },
+    )
+    entry = cfg.registries["remote"]
+    assert _effective_completion_remote(entry, cfg) is True
+
+
+def test_effective_completion_remote_inherits_global(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Per-registry completion_remote=None inherits global setting."""
+    from alph.cli import _effective_completion_remote
+    from alph.core import AlphConfig, RegistryEntry
+
+    cfg = AlphConfig(
+        completion_remote=True,
+        registries={
+            "remote": RegistryEntry(pool_home="git@github.com:o/r.git"),
+        },
+    )
+    entry = cfg.registries["remote"]
+    assert _effective_completion_remote(entry, cfg) is True
+
+
+def test_effective_completion_remote_per_registry_false_overrides_global_true(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Per-registry completion_remote=False disables that registry even when global is True."""
+    from alph.cli import _effective_completion_remote
+    from alph.core import AlphConfig, RegistryEntry
+
+    cfg = AlphConfig(
+        completion_remote=True,
+        registries={
+            "remote": RegistryEntry(pool_home="git@github.com:o/r.git", completion_remote=False),
+        },
+    )
+    entry = cfg.registries["remote"]
+    assert _effective_completion_remote(entry, cfg) is False

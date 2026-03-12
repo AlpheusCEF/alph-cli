@@ -87,6 +87,7 @@ class RegistryEntry:
     auto_pull: bool = False  # pull before read (rw remote only)
     branch: str = ""  # git branch for RO reads and RW clone checkout
     ssh_command: str = ""  # overrides GIT_SSH_COMMAND for all git ops on this registry
+    completion_remote: bool | None = None  # None = inherit AlphConfig.completion_remote
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,8 @@ class AlphConfig:
     default_pool: str = ""
     register_subdir_pools: bool = False
     defaults_reminder: bool = True
+    completion_remote: bool = False  # include remote registries in tab completion (global default)
+    completion_cache_ttl: int = 60  # seconds to cache remote completion results
     registries: dict[str, RegistryEntry] = field(default_factory=dict)
 
 
@@ -561,6 +564,7 @@ def load_config(
                         auto_pull=bool(v["auto_pull"]) if "auto_pull" in v else _rw_default,
                         branch=str(v.get("branch", "")),
                         ssh_command=str(v.get("ssh_command", "")),
+                        completion_remote=bool(v["completion_remote"]) if "completion_remote" in v else None,
                     )
         merged.update({k: v for k, v in data.items() if k != "registries"})
 

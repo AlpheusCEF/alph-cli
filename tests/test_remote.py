@@ -769,3 +769,143 @@ def test_push_remote_registry_raises_on_failure(tmp_path: Path) -> None:
     with patch("alph.remote.subprocess.run", return_value=mock_result), \
             pytest.raises(RuntimeError, match="git push failed"):
         push_remote_registry(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Remote pool listing and completion cache
+# ---------------------------------------------------------------------------
+
+
+def test_list_remote_pools_returns_tree_entries_with_pool_structure() -> None:
+    """list_remote_pools returns subdirectory names that contain snapshots/ or live/."""
+    from alph.remote import list_remote_pools
+
+    mock_provider = MagicMock()
+    # list_files is called: once for top-level, then once per tree candidate.
+    mock_provider.list_files.side_effect = [
+        # Top-level listing: two pool dirs, one file, one non-pool dir.
+        [
+            FileEntry(name="vehicles", path="registry/vehicles", file_type="tree"),
+            FileEntry(name="appliances", path="registry/appliances", file_type="tree"),
+            FileEntry(name="README.md", path="registry/README.md", file_type="blob"),
+            FileEntry(name="scratch", path="registry/scratch", file_type="tree"),
+        ],
+        # vehicles/ children: has snapshots and live subdirs
+        [
+            FileEntry(name="snapshots", path="registry/vehicles/snapshots", file_type="tree"),
+            FileEntry(name="live", path="registry/vehicles/live", file_type="tree"),
+        ],
+        # appliances/ children: has live only
+        [
+            FileEntry(name="live", path="registry/appliances/live", file_type="tree"),
+        ],
+        # scratch/ children: no snapshots or live
+        [
+            FileEntry(name="config.yaml", path="registry/scratch/config.yaml", file_type="blob"),
+        ],
+    ]
+
+    pools = list_remote_pools(mock_provider, "registry")
+    assert "vehicles" in pools
+    assert "appliances" in pools
+    assert "scratch" not in pools
+    assert "README.md" not in pools
+
+
+def test_list_remote_pools_returns_empty_when_subpath_missing() -> None:
+    """list_remote_pools returns [] when the subpath doesn't exist in the repo."""
+    from alph.remote import list_remote_pools
+
+    mock_provider = MagicMock()
+    mock_provider.list_files.return_value = []
+
+    pools = list_remote_pools(mock_provider, "nonexistent")
+    assert pools == []
+
+
+def test_list_remote_pools_root_subpath() -> None:
+    """list_remote_pools handles empty subpath (pools at repo root)."""
+    from alph.remote import list_remote_pools
+
+    mock_provider = MagicMock()
+    mock_provider.list_files.side_effect = [
+        # Top-level: one pool dir
+        [FileEntry(name="mypool", path="mypool", file_type="tree")],
+        # mypool/ children: has snapshots
+        [FileEntry(name="snapshots", path="mypool/snapshots", file_type="tree")],
+    ]
+
+    pools = list_remote_pools(mock_provider, "")
+    assert "mypool" in pools
+
+
+def test_fetch_remote_pools_cached_returns_fresh_cache(tmp_path: Path) -> None:
+    """fetch_remote_pools_cached returns cached result without calling provider."""
+    import time
+
+    from alph.remote import fetch_remote_pools_cached
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cache_key = "git@github.com:org/repo.git:/registry"
+    key_hash = __import__("hashlib").sha256(cache_key.encode()).hexdigest()[:16]
+    cache_file = cache_dir / f"{key_hash}.json"
+    cache_file.write_text(
+        json.dumps({"pools": ["vehicles", "appliances"], "fetched_at": time.time()})
+    )
+
+    mock_provider = MagicMock()
+    pools = fetch_remote_pools_cached(
+        mock_provider, "registry", cache_key=cache_key,
+        cache_dir=cache_dir, ttl=60,
+    )
+    assert pools == ["vehicles", "appliances"]
+    mock_provider.list_files.assert_not_called()
+
+
+def test_fetch_remote_pools_cached_refreshes_stale_cache(tmp_path: Path) -> None:
+    """fetch_remote_pools_cached calls provider when cache is expired."""
+    import time
+
+    from alph.remote import fetch_remote_pools_cached
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cache_key = "git@github.com:org/repo.git:/registry"
+    key_hash = __import__("hashlib").sha256(cache_key.encode()).hexdigest()[:16]
+    cache_file = cache_dir / f"{key_hash}.json"
+    cache_file.write_text(
+        json.dumps({"pools": ["old"], "fetched_at": time.time() - 120})
+    )
+
+    mock_provider = MagicMock()
+    with patch("alph.remote.list_remote_pools", return_value=["fresh"]) as mock_list:
+        pools = fetch_remote_pools_cached(
+            mock_provider, "registry", cache_key=cache_key,
+            cache_dir=cache_dir, ttl=60,
+        )
+    assert pools == ["fresh"]
+    mock_list.assert_called_once_with(mock_provider, "registry")
+
+
+def test_fetch_remote_pools_cached_writes_cache_on_miss(tmp_path: Path) -> None:
+    """fetch_remote_pools_cached writes result to cache after a live fetch."""
+    from alph.remote import fetch_remote_pools_cached
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cache_key = "git@github.com:org/repo.git:/registry"
+    key_hash = __import__("hashlib").sha256(cache_key.encode()).hexdigest()[:16]
+    cache_file = cache_dir / f"{key_hash}.json"
+
+    mock_provider = MagicMock()
+    with patch("alph.remote.list_remote_pools", return_value=["sensors"]):
+        fetch_remote_pools_cached(
+            mock_provider, "registry", cache_key=cache_key,
+            cache_dir=cache_dir, ttl=60,
+        )
+
+    assert cache_file.exists()
+    data = json.loads(cache_file.read_text())
+    assert data["pools"] == ["sensors"]
+    assert "fetched_at" in data

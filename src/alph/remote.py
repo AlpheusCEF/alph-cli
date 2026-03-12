@@ -376,6 +376,99 @@ def provider_for_url(
 
 
 # ---------------------------------------------------------------------------
+# Completion helpers — remote pool listing with disk cache
+# ---------------------------------------------------------------------------
+
+
+def list_remote_pools(provider: RemoteProvider, subpath: str) -> list[str]:
+    """Return pool names found under *subpath* in the remote registry.
+
+    A directory is considered a pool if it contains a ``snapshots/`` or
+    ``live/`` tree entry.  Blobs (files) at the registry root are ignored.
+
+    Each candidate directory receives one ``list_files`` call to inspect its
+    immediate children.  This costs one API round-trip per candidate.
+
+    Args:
+        provider: Authenticated provider for the remote repository.
+        subpath:  Path within the repo where pool subdirectories live.
+                  Empty string means the repo root.
+
+    Returns:
+        Sorted list of pool directory names.
+    """
+    top_entries = provider.list_files(subpath)
+    candidates = [e.name for e in top_entries if e.file_type == "tree"]
+    pools: list[str] = []
+    for name in candidates:
+        dir_path = f"{subpath}/{name}" if subpath else name
+        child_entries = provider.list_files(dir_path)
+        child_tree_names = {e.name for e in child_entries if e.file_type == "tree"}
+        if "snapshots" in child_tree_names or "live" in child_tree_names:
+            pools.append(name)
+    return sorted(pools)
+
+
+_COMPLETION_CACHE_DIR = Path.home() / ".cache" / "alph" / "completion"
+
+
+def fetch_remote_pools_cached(
+    provider: RemoteProvider,
+    subpath: str,
+    *,
+    cache_key: str,
+    cache_dir: Path | None = None,
+    ttl: int = 60,
+) -> list[str]:
+    """Return pool names for a remote registry, using a disk cache.
+
+    The cache is stored as JSON under *cache_dir* (default:
+    ``~/.cache/alph/completion/``).  Each entry is keyed by a hash of
+    *cache_key* (typically the raw ``pool_home`` URL) and expires after
+    *ttl* seconds.
+
+    On any cache I/O error the call falls back to a live fetch.
+
+    Args:
+        provider:  Authenticated provider for the remote repository.
+        subpath:   Path within the repo where pool subdirectories live.
+        cache_key: String used to derive the cache filename (usually pool_home).
+        cache_dir: Override cache directory (useful in tests).
+        ttl:       Cache validity in seconds (default 60).
+
+    Returns:
+        Sorted list of pool directory names.
+    """
+    import time
+
+    effective_cache_dir = cache_dir if cache_dir is not None else _COMPLETION_CACHE_DIR
+    key_hash = hashlib.sha256(cache_key.encode()).hexdigest()[:16]
+    cache_file = effective_cache_dir / f"{key_hash}.json"
+
+    # Try to read a fresh cache entry.
+    try:
+        if cache_file.exists():
+            data = json.loads(cache_file.read_text())
+            if time.time() - float(data["fetched_at"]) < ttl:
+                return list(data["pools"])
+    except Exception:
+        pass  # Corrupt or unreadable cache — fall through to live fetch.
+
+    pools = list_remote_pools(provider, subpath)
+
+    # Write updated cache entry (best-effort).
+    try:
+        effective_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            json.dumps({"pools": pools, "fetched_at": time.time()})
+        )
+    except Exception:
+        pass
+
+    return pools
+
+
+# ---------------------------------------------------------------------------
 # Pool resolution
 # ---------------------------------------------------------------------------
 

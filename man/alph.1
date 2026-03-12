@@ -1,5 +1,5 @@
 .\" Man page for alph(1) — Alpheus Context Engine Framework CLI
-.TH ALPH 1 "2026-03-12" "alph 0.1.28" "Alpheus Context Engine Framework"
+.TH ALPH 1 "2026-03-12" "alph 0.1.29" "Alpheus Context Engine Framework"
 .SH NAME
 alph \- git-backed context management for LLMs
 .SH SYNOPSIS
@@ -32,11 +32,11 @@ Enable debug logging.
 Show version and exit.
 .TP
 .BR \-r ", " \-\-reg ", " \-\-registry " " \fITEXT\fR
-Override registry: ID, name, or remote git URL.
-Scopes pool resolution to this registry for one invocation.
+Override registry for one invocation: accepts a registry ID, human-readable name,
+or a raw git remote URL (\fIgit@github.com:org/repo.git:/subpath\fR).
 .TP
 .BI \-\-branch " TEXT"
-Override git branch for remote operations.
+Override git branch for remote operations this invocation.
 Useful with ad-hoc \fB\-\-registry\fR URLs that have no config entry.
 .TP
 .BR \-h ", " \-\-help
@@ -46,6 +46,7 @@ Show help and exit.
 .TP
 .B alph add
 Create a context node in a pool.
+Shorthand: \fBalph a\fR.
 .RS
 .TP
 .BR \-c ", " \-\-context " " \fITEXT\fR
@@ -69,15 +70,16 @@ Optional Markdown body.
 .TP
 .B alph list
 List nodes in a pool with frontmatter summary.
+Shorthand: \fBalph l\fR.
 .RS
 .TP
 .BR \-p ", " \-\-pool " " \fITEXT\fR
-Pool path or name.
+Pool path or name. Defaults to \fBdefault_pool\fR from config.
 .TP
 .BR \-s ", " \-\-status " " \fITEXT\fR
-Filter by status: \fBarchived\fR, \fBsuppressed\fR, \fBall\fR,
-or comma-separated (e.g. \fBarchived,suppressed\fR).
-Default: active only.
+Filter by status. Omit for active-only.
+Values: \fBarchived\fR, \fBsuppressed\fR, \fBall\fR, or comma-separated
+(e.g. \fBarchived,suppressed\fR).
 .TP
 .BR \-o ", " \-\-output " " \fITEXT\fR
 Output format: \fBconsole\fR (default), \fBjson\fR, \fByaml\fR, \fBcsv\fR.
@@ -88,6 +90,7 @@ Pull latest changes before listing (RW clones only).
 .TP
 .B alph show \fINODE_ID\fR
 Display full node content formatted for terminal.
+Shorthand: \fBalph s\fR.
 .RS
 .TP
 .BR \-p ", " \-\-pool " " \fITEXT\fR
@@ -99,6 +102,7 @@ Pull latest changes before showing (RW clones only).
 .TP
 .B alph validate
 Check all nodes in a pool against schema.
+Shorthand: \fBalph v\fR.
 .RS
 .TP
 .BR \-p ", " \-\-pool " " \fITEXT\fR
@@ -113,16 +117,19 @@ Show the currently resolved defaults (registry, pool, creator).
 .SS "Registry commands (alph registry | alph reg)"
 .PP
 When no subcommand is given, defaults to \fBregistry list\fR.
+\fBalph reg\fR is an accepted shorthand for \fBalph registry\fR.
 .TP
 .B alph registry init
 Create a registry and register it in the global config.
 .RS
 .TP
 .BI \-\-pool\-home " TEXT"
-Directory or git remote URL. Required.
+Directory (local registry) or git remote URL
+(\fIgit@github.com:org/repo.git:/subpath\fR for remote). Required.
 .TP
 .BI \-\-id " TEXT"
-Machine identifier for the registry. Required.
+Machine identifier for the registry.
+Must be unique and not a reserved name (\fBall\fR, \fBalph\fR). Required.
 .TP
 .BR \-c ", " \-\-context " " \fITEXT\fR
 Human/LLM-readable description. Required.
@@ -131,32 +138,33 @@ Human/LLM-readable description. Required.
 Optional human-readable name.
 .TP
 .BI \-\-mode " TEXT"
-Access mode: \fBro\fR or \fBrw\fR.
-Auto-detected if omitted (ro for remote, rw for local).
+Access mode: \fBro\fR (read-only) or \fBrw\fR (read-write).
+Auto-detected when omitted (ro for remote URLs, rw for local paths).
 .TP
 .BI \-\-clone\-path " TEXT"
-Local directory for RW clone (remote registries only).
+Local directory for RW clone. Default: \fI~/.cache/alph/clones/<hash>/\fR.
 .TP
 .BI \-\-branch " TEXT"
 Git branch for RO reads and RW clone checkout.
 .TP
 .BR \-\-auto\-push " | " \-\-no\-auto\-push
-Push after commit. Default: true for RW remote, false for local.
+Push after each commit. Default: true for RW remote, false for local.
 .TP
 .BR \-\-auto\-pull " | " \-\-no\-auto\-pull
-Pull before read. Default: true for RW remote, false for local.
+Pull before each read. Default: true for RW remote, false for local.
 .RE
 .TP
 .B alph registry list
-List all registries known from the config file tree.
+List all registries declared in the config file tree.
 .TP
 .B alph registry check \fR[\fIREGISTRY_ID\fR]
-Verify a registry is reachable.
-Pass \fBall\fR to check every registry.
+Verify a registry is reachable (path exists, remote responds).
+Pass \fBall\fR to check every configured registry.
 Defaults to \fBdefault_registry\fR when no argument is given.
 .TP
 .B alph registry clone \fR[\fIREGISTRY_ID\fR]
-Clone a remote registry locally for RW access.
+Clone a remote RW registry to a local directory.
+A second invocation prints "already cloned" and exits cleanly.
 Defaults to \fBdefault_registry\fR when no argument is given.
 .RS
 .TP
@@ -165,18 +173,20 @@ Local directory to clone into. Default: \fI~/.cache/alph/clones/<hash>/\fR.
 .RE
 .TP
 .B alph registry pull \fR[\fIREGISTRY_ID\fR]
-Pull latest changes for a cloned remote registry (git pull \-\-rebase).
+Pull latest changes for a cloned remote registry (\fBgit pull \-\-rebase\fR).
+Handles diverged branches from concurrent writers.
 Defaults to \fBdefault_registry\fR when no argument is given.
 .TP
 .B alph registry push \fR[\fIREGISTRY_ID\fR]
 Push local commits in a cloned remote registry to the remote.
-Use this to recover after a failed auto-push, or to push explicitly when
-\fBauto_push\fR is disabled.
+Use this to recover after a failed auto-push, or to push explicitly
+when \fBauto_push\fR is disabled.
 Defaults to \fBdefault_registry\fR when no argument is given.
 .TP
 .B alph registry status \fR[\fIREGISTRY_ID\fR]
-Show registry status: mode, clone state, unpushed commit count, branch, auto_push,
-and path details.
+Show registry status: mode, remote URL, clone state, unpushed commit count,
+branch, auto_push, auto_pull, and path details.
+Pass \fBall\fR to show status for every configured registry.
 Defaults to \fBdefault_registry\fR when no argument is given.
 .SS "Pool commands (alph pool)"
 .PP
@@ -184,13 +194,14 @@ When no subcommand is given, defaults to \fBpool list\fR.
 .TP
 .B alph pool init
 Create a pool inside a registry.
+The pool name must not be a reserved name (\fBall\fR, \fBalph\fR).
 .RS
 .TP
 .BR \-r ", " \-\-reg ", " \-\-registry " " \fITEXT\fR
 Registry ID or name. Defaults to \fBdefault_registry\fR.
 .TP
 .BI \-\-name " TEXT"
-Pool name (machine identifier, used as directory name). Required.
+Pool name (machine identifier, used as the directory name). Required.
 .TP
 .BR \-c ", " \-\-context " " \fITEXT\fR
 Human/LLM-readable description. Required.
@@ -200,7 +211,7 @@ Pool type: \fBsubdir\fR (default) or \fBrepo\fR.
 .RE
 .TP
 .B alph pool list
-List pools in a registry (configured and discovered on disk).
+List pools in a registry (configured entries and pools discovered on disk).
 .SS "Config commands (alph config)"
 .PP
 When no subcommand is given, defaults to \fBconfig list\fR.
@@ -210,34 +221,73 @@ List all config files in the discovery tree, showing which exist
 and which registries each declares.
 .TP
 .B alph config show \fIPATH\fR
-Display a config file with syntax highlighting.
+Display a specific config file with syntax highlighting.
 .TP
 .B alph config show\-all
-Display the fully merged config with all default values filled in.
-Shows the resolved configuration as alph sees it.
+Display the fully merged config with all default values filled in,
+as alph sees it after applying the full cascade.
 .TP
 .B alph config check
-Check all config files for unknown or legacy keys.
-Reports typos like \fBclone_dir\fR instead of \fBclone_path\fR.
+Check all config files for unknown or legacy keys, and validate that
+\fBdefault_registry\fR references a declared registry.
+Reports typos such as \fBclone_dir\fR instead of \fBclone_path\fR.
 .SH CONFIGURATION
 .B alph
 loads configuration from a cascade of YAML files. Priority (highest wins):
-CLI overrides > cwd-nearest config > ... > global config > defaults.
+CLI flags > cwd-nearest config > ... > global config > built-in defaults.
+.PP
+Config files are discovered by walking up from the current directory.
+The global config is always the base layer; local \fBconfig.yaml\fR files
+add to or override individual values (registries accumulate across all layers).
 .TP
 .I ~/.config/alph/config.yaml
-Global config (base layer). Created by \fBalph registry init\fR.
+Global config (base layer). Created automatically by \fBalph registry init\fR.
+Override the directory with \fBALPH_CONFIG_DIR\fR.
 .TP
 .I config.yaml
-Local config files found walking up from the current directory.
+Local config files found by walking up from the current directory.
+The most-specific (nearest to cwd) file wins for scalar values.
 .PP
-Top-level config keys:
+.B Example config.yaml:
 .RS
+.nf
+creator: alice@example.com
+auto_commit: false
+default_registry: personal
+default_pool: projects
+completion_remote: false
+completion_cache_ttl: 60
+
+registries:
+  personal:
+    pool_home: ~/context
+    context: "Local personal context"
+    mode: rw
+  shared:
+    pool_home: git@github.com:org/repo.git:/registry
+    context: "Shared team context"
+    mode: ro
+    branch: main
+    completion_remote: true
+  work-rw:
+    pool_home: git@github.com:org/work.git:/ctx
+    context: "Work registry (RW clone)"
+    mode: rw
+    clone_path: ~/work-ctx-clone
+    auto_push: true
+    auto_pull: true
+    ssh_command: "ssh -i ~/.ssh/id_work"
+.fi
+.RE
+.PP
+.SS "Top-level config keys"
 .TP
 .B creator
 Default creator email for new nodes.
 .TP
 .B auto_commit
-Auto-commit after node creation (default: false).
+When true, automatically \fBgit commit\fR after each node is created.
+Default: false.
 .TP
 .B default_registry
 Registry ID used when no \fB\-\-registry\fR flag is given.
@@ -246,44 +296,134 @@ Registry ID used when no \fB\-\-registry\fR flag is given.
 Pool name used when no \fB\-\-pool\fR flag is given.
 .TP
 .B register_subdir_pools
-When true, \fBpool init\fR writes pool entries to the config file
+When true, \fBpool init\fR writes the pool entry to the config file
 in addition to the pool-local \fI.alph.yaml\fR dotfile.
-Default: false (subdir pools are discovered from the filesystem).
+Default: false — subdir pools are discovered from the filesystem.
+.TP
+.B defaults_reminder
+When true, \fBalph add\fR prints a reminder showing the resolved registry
+and pool before writing the node. Default: true.
+.TP
+.B completion_remote
+Global flag that controls whether tab completion for \fB\-\-pool\fR queries
+RO remote registries via the forge API.
+.RS
+.IP \(bu 2
+\fBfalse\fR (default): only local registry dirs and RW remote clone dirs
+are scanned during completion. No network calls.
+.IP \(bu 2
+\fBtrue\fR: RO remote registries are also queried via the GitHub GraphQL API.
+Results are cached; see \fBcompletion_cache_ttl\fR.
+.PP
+This flag has no effect on local registries or RW remote registries that have
+a local clone — those are always scanned from disk regardless of this setting.
+Per-registry \fBcompletion_remote\fR overrides this global default.
+.RE
+.TP
+.B completion_cache_ttl
+Seconds to cache remote pool-name results for tab completion.
+Default: 60.
+Set to 0 to always fetch live.
+Cache files: \fI~/.cache/alph/completion/<hash>.json\fR.
 .TP
 .B registries
-Map of registry IDs to registry entries.
-.RE
-.PP
-Registry entry keys:
-.RS
+Map of registry IDs to registry entry objects (see below).
+.SS "Registry entry keys"
+Each entry in the \fBregistries\fR map accepts:
 .TP
 .B pool_home
-Local path or git remote URL (e.g. \fIgit@github.com:org/repo.git:/subpath\fR).
+Required. Local path or git remote URL.
+Remote URL format: \fIgit@github.com:org/repo.git:/subpath\fR
+(the \fB:/\fR delimiter separates the git URL from the path within the repo).
+For HTTPS URLs: \fIhttps://github.com/org/repo.git:/subpath\fR.
 .TP
 .B context
-Human/LLM-readable description.
+Human/LLM-readable description of the registry.
 .TP
 .B name
-Optional human-readable name.
+Optional human-readable name (may contain spaces).
 .TP
 .B mode
-\fBro\fR (read-only) or \fBrw\fR (read-write). Auto-detected for remote URLs.
+\fBro\fR (read-only) or \fBrw\fR (read-write).
+Auto-detected when omitted: \fBro\fR for remote URLs, \fBrw\fR for local paths.
 .TP
 .B clone_path
-Local directory for RW clone (remote registries only).
+Local directory where the RW clone is stored.
+Default when omitted: \fI~/.cache/alph/clones/<sha256(url)[:12]>/\fR.
+Applies to RW remote registries only.
 .TP
 .B branch
-Git branch for RO reads and RW clone checkout.
+Git branch for RO API reads and for RW clone checkout.
+Omit to use \fBHEAD\fR / the default branch.
 .TP
 .B auto_push
-Push after commit (default: true for RW remote).
+When true, push to the remote after each \fBalph add\fR commit.
+Default: true for RW remote registries, false for local.
+On failure, an error is printed with a \fBalph registry push <id>\fR recovery hint.
 .TP
 .B auto_pull
-Pull before read (default: true for RW remote).
+When true, pull from the remote before each read operation (\fBlist\fR, \fBshow\fR, \fBvalidate\fR).
+Default: true for RW remote registries, false for local.
+.TP
+.B ssh_command
+Override \fBGIT_SSH_COMMAND\fR for all git operations on this registry.
+Example: \fIssh \-i ~/.ssh/id_work\fR.
+Useful when the registry is hosted on a forge that requires a non-default SSH key.
+.TP
+.B completion_remote
+Per-registry override for tab completion.
+.RS
+.IP \(bu 2
+\fBtrue\fR: this registry's pools are fetched via the forge API during tab completion,
+even if the global \fBcompletion_remote\fR is false.
+.IP \(bu 2
+\fBfalse\fR: this registry is always skipped in completion, even if the global flag is true.
+.IP \(bu 2
+Omit: inherit the global \fBcompletion_remote\fR setting.
+.PP
+This key is meaningful only for RO remote registries with no local clone.
+RW registries with a clone are always scanned from disk.
+.RE
 .TP
 .B pools
-Map of pool names to pool metadata (\fBcontext\fR, \fBtype\fR).
+Map of pool names to pool metadata objects.
+Each pool entry may contain \fBcontext\fR and \fBtype\fR (\fBsubdir\fR or \fBrepo\fR).
+Most pools are discovered from the filesystem without being declared here.
+.SH TAB COMPLETION
+.B alph
+supports shell tab completion for registry IDs and pool names.
+.PP
+Install completion once for your shell:
+.RS
+.nf
+alph --install-completion zsh    # or bash, fish
+exec zsh                          # reload shell to activate
+.fi
 .RE
+.PP
+What completes:
+.TP
+Registry ID arguments (\fBcheck\fR, \fBclone\fR, \fBpull\fR, \fBpush\fR, \fBstatus\fR)
+Returns all configured registry IDs plus the meta-reference \fBall\fR.
+Filtered by prefix as you type.
+.TP
+\fB\-\-pool\fR / \fB\-p\fR options (\fBadd\fR, \fBlist\fR, \fBshow\fR, \fBvalidate\fR)
+Scans for pool names based on registry type:
+.RS
+.IP \(bu 2
+\fBLocal registry\fR: scans \fBpool_home\fR on disk. Fast, no network.
+.IP \(bu 2
+\fBRW remote with clone\fR: scans the local clone dir. Fast, no network.
+.IP \(bu 2
+\fBRO remote\fR: skipped by default. Enable with \fBcompletion_remote: true\fR
+(global or per-registry) to query the forge API and cache results.
+.RE
+.PP
+Remote pool completion is intentionally off by default to avoid network calls
+during tab completion. When enabled, results are cached for \fBcompletion_cache_ttl\fR
+seconds (default 60) in \fI~/.cache/alph/completion/\fR.
+Any network or auth error during remote completion is silently suppressed
+so a failing API call never interrupts the shell.
 .SH POOL STRUCTURE
 Each pool directory contains:
 .RS
@@ -307,18 +447,19 @@ Schema version (currently 1).
 .TP
 .B id
 Deterministic identifier: sha256(source + context)[:12].
+Identical inputs produce the same ID, enabling idempotent re-adds.
 .TP
 .B timestamp
 ISO 8601 creation timestamp.
 .TP
 .B source
-Origin of the context (e.g. URL, conversation, document).
+Origin of the context (e.g. URL, conversation title, document name).
 .TP
 .B node_type
 \fBsnapshot\fR or \fBlive\fR.
 .TP
 .B context
-Human/LLM-readable description.
+Human/LLM-readable description of this specific node.
 .TP
 .B creator
 Email of the node creator.
@@ -327,34 +468,40 @@ Email of the node creator.
 \fBactive\fR (default), \fBarchived\fR, or \fBsuppressed\fR.
 .TP
 .B tags
-Optional list of tags.
+Optional list of string tags.
 .TP
 .B related_to
-Optional list of related node IDs. Supports cross-pool
-(\fIpool::node_id\fR) and cross-registry (\fIregistry::pool::node_id\fR) references.
+Optional list of related node IDs.
+Supports cross-pool references (\fIpool::node_id\fR)
+and cross-registry references (\fIregistry::pool::node_id\fR).
 .TP
 .B meta
-Optional metadata dictionary (e.g. \fBprovider\fR, \fBresolves_to\fR for live nodes).
+Optional metadata dictionary.
+Live nodes use \fBmeta.provider\fR and \fBmeta.resolves_to\fR
+(\fBsingle\fR or \fBcollection\fR).
 .RE
 .SH ENVIRONMENT
 .TP
 .B ALPH_CONFIG_DIR
 Override the global config directory (default: \fI~/.config/alph/\fR).
-Primarily used for testing.
+Used primarily in testing.
 .TP
 .B GITHUB_TOKEN\fR, \fBGH_TOKEN
-GitHub personal access token for remote registry API reads.
-Falls back to \fBgh auth token\fR.
+GitHub personal access token for remote registry API reads (RO mode and tab completion).
+Falls back to \fBgh auth token\fR when neither is set.
 .SH FILES
 .TP
 .I ~/.config/alph/config.yaml
-Global configuration file.
-.TP
-.I ~/.config/alph/secrets.yaml
-Secrets file (gitignored).
+Global configuration file. Written by \fBalph registry init\fR.
 .TP
 .I ~/.cache/alph/clones/
-Default location for remote registry clones.
+Default parent directory for remote registry clones (one subdirectory per remote URL).
+.TP
+.I ~/.cache/alph/completion/
+Cache directory for remote pool-name completion results.
+Files are named \fI<sha256(pool_home)[:16]>.json\fR and contain
+the pool list and fetch timestamp.
+Expired automatically based on \fBcompletion_cache_ttl\fR; safe to delete.
 .SH EXAMPLES
 Create a local registry and pool:
 .PP
@@ -365,24 +512,17 @@ alph pool init \-\-name projects \-c "Active projects"
 .fi
 .RE
 .PP
-Add a snapshot node:
+Add a snapshot node and list it:
 .PP
 .RS
 .nf
 alph add \-c "Decided to use PostgreSQL for the new service"
-.fi
-.RE
-.PP
-List nodes, show one:
-.PP
-.RS
-.nf
 alph list
 alph show a1b2c3d4e5f6
 .fi
 .RE
 .PP
-Set up a read-only remote registry:
+Set up a read-only remote registry and browse it:
 .PP
 .RS
 .nf
@@ -392,7 +532,38 @@ alph list \-\-registry shared \-\-pool standards
 .fi
 .RE
 .PP
-Check config for typos:
+Set up a read-write remote registry with a local clone:
+.PP
+.RS
+.nf
+alph registry init \-\-pool\-home git@github.com:org/work.git:/ctx \\
+    \-\-id work \-c "Work context" \-\-mode rw
+alph registry clone work
+alph add \-\-registry work \-c "Architecture decision: service mesh"
+.fi
+.RE
+.PP
+Recover from a failed auto-push:
+.PP
+.RS
+.nf
+alph registry status work     # shows unpushed: N
+alph registry push work
+.fi
+.RE
+.PP
+Enable tab completion for pool names on a RO remote:
+.PP
+.RS
+.nf
+# In ~/.config/alph/config.yaml, add under the registry entry:
+#   completion_remote: true
+#   completion_cache_ttl: 120   # optional, default 60
+alph list \-\-pool <TAB>        # now returns pools from the remote
+.fi
+.RE
+.PP
+Check config for typos and view merged result:
 .PP
 .RS
 .nf
@@ -403,8 +574,15 @@ alph config show\-all
 .SH MCP SERVER
 .B alph\-mcp
 exposes the same core functions as MCP tools for LLM integration.
-It is installed alongside \fBalph\fR and can be configured as an MCP server
-in Claude, Cursor, or other MCP-compatible clients.
+It is installed alongside \fBalph\fR and is configured as an MCP server
+in Claude Code, Cursor, or other MCP-compatible clients.
+.PP
+Register with Claude Code:
+.RS
+.nf
+claude mcp add \-\-scope user alph \-\- alph\-mcp
+.fi
+.RE
 .SH SEE ALSO
 .BR git (1)
 .PP
