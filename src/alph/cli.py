@@ -1733,7 +1733,9 @@ def _generate_completion_script(shell: str) -> str:
         capture_output=True,
         text=True,
     )
-    return result.stdout
+    # Typer emits a leading newline before #compdef — strip it so
+    # compinit recognises the file (#compdef must be on byte 0).
+    return result.stdout.lstrip("\n")
 
 
 def _resolve_shell(shell: str | None) -> str:
