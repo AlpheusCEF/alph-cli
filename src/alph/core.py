@@ -717,9 +717,21 @@ def list_pools(
             )
         )
 
-    # Discover pools on disk for local registries.
-    if not is_remote_registry(entry.pool_home) and home.is_dir():
-        for child in sorted(home.iterdir()):
+    # Discover pools on disk.  For RW remote registries with a local
+    # clone_path, scan the clone directory instead of the remote URL.
+    # For remote registries without a clone_path, skip disk discovery
+    # entirely (discovery requires a provider and is handled by the CLI layer).
+    scan_dir: Path | None = None
+    if is_remote_registry(entry.pool_home):
+        if entry.clone_path:
+            scan_dir = Path(entry.clone_path)
+            ref = parse_remote_registry(entry.pool_home)
+            if ref.subpath:
+                scan_dir = scan_dir / ref.subpath
+    else:
+        scan_dir = home
+    if scan_dir is not None and scan_dir.is_dir():
+        for child in sorted(scan_dir.iterdir()):
             if child.name in configured_names:
                 continue
             if child.is_dir() and _is_pool_dir(child):

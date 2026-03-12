@@ -2284,6 +2284,53 @@ def test_list_pools_reads_dotfile_context(tmp_path: Path) -> None:
     assert names["manual-pool"].source == "discovered"
 
 
+def test_list_pools_discovers_pools_in_rw_remote_clone(tmp_path: Path) -> None:
+    """list_pools discovers pools on disk for RW remote registries with clone_path."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / "socialauth" / "snapshots").mkdir(parents=True)
+    (clone_dir / "socialauth" / "live").mkdir(parents=True)
+    (clone_dir / "seamless" / "snapshots").mkdir(parents=True)
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "spp": {
+                "pool_home": "git@github.com:org/repo.git",
+                "context": "Test RW remote.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    result = list_pools("spp", cfg=cfg)
+    assert result is not None
+    names = {s.name for s in result}
+    assert "socialauth" in names
+    assert "seamless" in names
+
+
+def test_list_pools_discovers_pools_in_rw_remote_clone_with_subpath(tmp_path: Path) -> None:
+    """list_pools uses subpath within clone_path for remote registries with subpath."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / "registry" / "vehicles" / "snapshots").mkdir(parents=True)
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "demo": {
+                "pool_home": "git@github.com:org/repo.git:/registry",
+                "context": "Test RW remote with subpath.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    result = list_pools("demo", cfg=cfg)
+    assert result is not None
+    names = {s.name for s in result}
+    assert "vehicles" in names
+
+
 def test_init_pool_dotfile_duplicate_detection(tmp_path: Path) -> None:
     """init_pool detects duplicate when pool dir with .alph.yaml already exists."""
     global_dir = tmp_path / "global"

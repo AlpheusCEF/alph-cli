@@ -99,13 +99,15 @@ def test_pool_list_shows_remote_pools_for_ro_registry(tmp_path: Path, monkeypatc
 
     global_dir = tmp_path / "global"
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
-    runner.invoke(app, [
-        "registry", "init",
-        "--pool-home", "git@github.com:org/repo.git:/registry",
-        "--id", "demo",
-        "--context", "Demo remote registry",
-        "--mode", "ro",
-    ])
+    # Write config directly to avoid registry init creating a default pool.
+    global_dir.mkdir(parents=True, exist_ok=True)
+    (global_dir / "config.yaml").write_text(
+        "registries:\n"
+        "  demo:\n"
+        "    pool_home: 'git@github.com:org/repo.git:/registry'\n"
+        "    context: Demo remote registry\n"
+        "    mode: ro\n"
+    )
 
     mock_provider = MagicMock()
     with (
@@ -125,13 +127,15 @@ def test_pool_list_shows_no_pools_when_remote_discovery_fails(tmp_path: Path, mo
 
     global_dir = tmp_path / "global"
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
-    runner.invoke(app, [
-        "registry", "init",
-        "--pool-home", "git@github.com:org/repo.git:/registry",
-        "--id", "demo",
-        "--context", "Demo remote registry",
-        "--mode", "ro",
-    ])
+    # Write config directly to avoid registry init creating a default pool.
+    global_dir.mkdir(parents=True, exist_ok=True)
+    (global_dir / "config.yaml").write_text(
+        "registries:\n"
+        "  demo:\n"
+        "    pool_home: 'git@github.com:org/repo.git:/registry'\n"
+        "    context: Demo remote registry\n"
+        "    mode: ro\n"
+    )
 
     with patch("alph.cli.provider_for_url", side_effect=Exception("no token")):
         result = runner.invoke(app, ["pool", "list", "--registry", "demo", "--cwd", str(tmp_path)])
