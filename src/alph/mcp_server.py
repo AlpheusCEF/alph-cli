@@ -29,8 +29,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-_MCP_SOURCE = f"alph-mcp/v{importlib.metadata.version('alph-cli')}"
-
 import fastmcp
 from mcp.types import ToolAnnotations
 
@@ -44,6 +42,8 @@ from alph.core import (
     validate_node,
 )
 from alph.remote import provider_for_url, resolve_pool_readonly
+
+_MCP_SOURCE = f"alph-mcp/v{importlib.metadata.version('alph-cli')}"
 
 mcp = fastmcp.FastMCP(
     name="alph",

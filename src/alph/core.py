@@ -1,16 +1,52 @@
 """AlpheusCEF core logic. No framework dependencies. All business logic lives here."""
 
 import hashlib
+import io
 import json
 import logging
 import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
+from ruamel.yaml import YAML as _RuamelYAML
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# YAML round-trip helpers — preserve comments when rewriting config files
+# ---------------------------------------------------------------------------
+
+def _ruamel_load_config(path: Path) -> dict[str, Any]:
+    """Load a YAML config file via ruamel.yaml, preserving comments for round-trip writes.
+
+    Returns a CommentedMap (dict subclass) if the file exists and is non-empty,
+    or a plain empty dict if it does not.  All dict operations work on CommentedMap
+    transparently; comments are stored as metadata and survive re-serialisation.
+    """
+    if not path.exists():
+        return {}
+    _yaml: Any = _RuamelYAML()
+    _yaml.preserve_quotes = True
+    loaded: Any = _yaml.load(path.read_text())
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _ruamel_write_config(path: Path, data: dict[str, Any]) -> None:
+    """Write a YAML config file via ruamel.yaml, preserving any comments on *data*.
+
+    *data* should be the object returned by :func:`_ruamel_load_config` so that
+    comment metadata attached to its keys is round-tripped to disk.
+    """
+    _yaml: Any = _RuamelYAML()
+    _yaml.preserve_quotes = True
+    _yaml.width = 4096  # prevent ruamel from wrapping long values
+    buf = io.StringIO()
+    _yaml.dump(data, buf)
+    path.write_text(buf.getvalue())
+
 
 # ---------------------------------------------------------------------------
 # Reserved names — cannot be used as registry IDs or pool names
@@ -968,11 +1004,7 @@ def init_registry(
     global_config_dir.mkdir(parents=True, exist_ok=True)
     global_config_path = global_config_dir / "config.yaml"
 
-    global_data: dict[str, object] = {}
-    if global_config_path.exists():
-        loaded = yaml.safe_load(global_config_path.read_text()) or {}
-        if isinstance(loaded, dict):
-            global_data = loaded
+    global_data: dict[str, Any] = _ruamel_load_config(global_config_path)
 
     global_registries = global_data.get("registries", {})
     if not isinstance(global_registries, dict):
@@ -980,7 +1012,7 @@ def init_registry(
 
     # Write rich dict entry: pool_home path + metadata.
     # Only include optional fields when explicitly set to keep config clean.
-    registry_entry: dict[str, object] = {"pool_home": str(pool_home), "context": context}
+    registry_entry: dict[str, Any] = {"pool_home": str(pool_home), "context": context}
     if name:
         registry_entry["name"] = name
     if mode:
@@ -1001,9 +1033,7 @@ def init_registry(
         global_data["default_registry"] = registry_id
         set_as_default = True
 
-    global_config_path.write_text(
-        yaml.dump(global_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    )
+    _ruamel_write_config(global_config_path, global_data)
 
     logger.debug("init_registry: wrote %s to %s", registry_id, global_config_path)
     validation = validate_registry(global_data)
@@ -1171,11 +1201,7 @@ def init_pool(
     write_config_entry = pool_type == "repo" or cfg.register_subdir_pools
 
     global_config_path = global_config_dir / "config.yaml"
-    global_data: dict[str, object] = {}
-    if global_config_path.exists():
-        loaded = yaml.safe_load(global_config_path.read_text()) or {}
-        if isinstance(loaded, dict):
-            global_data = loaded
+    global_data: dict[str, Any] = _ruamel_load_config(global_config_path)
 
     if write_config_entry:
         global_registries = global_data.get("registries", {})
@@ -1201,9 +1227,7 @@ def init_pool(
     if default_reg == actual_reg_id and not global_data.get("default_pool"):
         global_data["default_pool"] = name
 
-    global_config_path.write_text(
-        yaml.dump(global_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    )
+    _ruamel_write_config(global_config_path, global_data)
     logger.debug("init_pool: added pool %r to registry %r in %s", name, actual_reg_id, global_config_path)
 
     validation = validate_registry(global_data)

@@ -2343,3 +2343,134 @@ def test_init_pool_repo_type_always_writes_config_entry(tmp_path: Path) -> None:
     # Repo pools always go in config.
     final_data = yaml.safe_load(cfg_path.read_text())
     assert "repo-pool" in final_data["registries"]["test-reg"].get("pools", {})
+
+
+# ---------------------------------------------------------------------------
+# Comment preservation — init_registry and init_pool must not strip comments
+# ---------------------------------------------------------------------------
+
+
+def test_init_registry_preserves_top_level_comment(tmp_path: Path) -> None:
+    """A comment at the top of config.yaml survives registry init."""
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    config_path = global_dir / "config.yaml"
+    config_path.write_text(
+        "# Personal alph configuration — do not auto-generate\n"
+        "creator: test@example.com\n"
+        "registries:\n"
+        "  existing:\n"
+        "    pool_home: /tmp/existing\n"
+        "    context: Existing registry.\n"
+    )
+
+    init_registry(
+        pool_home=tmp_path / "new-reg",
+        registry_id="new-reg",
+        context="New registry.",
+        global_config_dir=global_dir,
+    )
+
+    assert "# Personal alph configuration" in config_path.read_text()
+
+
+def test_init_registry_preserves_comment_above_existing_registry_entry(tmp_path: Path) -> None:
+    """A comment above an existing registry entry survives when a new registry is added."""
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    config_path = global_dir / "config.yaml"
+    config_path.write_text(
+        "creator: test@example.com\n"
+        "registries:\n"
+        "  # my household registry\n"
+        "  household:\n"
+        "    pool_home: /tmp/household\n"
+        "    context: Household context.\n"
+    )
+
+    init_registry(
+        pool_home=tmp_path / "work",
+        registry_id="work",
+        context="Work registry.",
+        global_config_dir=global_dir,
+    )
+
+    result = config_path.read_text()
+    assert "# my household registry" in result
+    assert "work" in result
+
+
+def test_init_registry_preserves_inline_comment_on_existing_key(tmp_path: Path) -> None:
+    """An inline comment on an existing top-level key survives registry init."""
+    global_dir = tmp_path / "global"
+    global_dir.mkdir()
+    config_path = global_dir / "config.yaml"
+    config_path.write_text(
+        "creator: test@example.com  # primary identity\n"
+        "registries:\n"
+        "  r1:\n"
+        "    pool_home: /tmp/r1\n"
+        "    context: R1.\n"
+    )
+
+    init_registry(
+        pool_home=tmp_path / "r2",
+        registry_id="r2",
+        context="R2.",
+        global_config_dir=global_dir,
+    )
+
+    assert "# primary identity" in config_path.read_text()
+
+
+def test_init_pool_preserves_top_level_comment(tmp_path: Path) -> None:
+    """A comment at the top of config.yaml survives pool init."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "registry"
+    init_registry(
+        pool_home=reg_home,
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    config_path = global_dir / "config.yaml"
+    # Inject a comment into the file that init_pool must preserve.
+    original = config_path.read_text()
+    config_path.write_text("# managed by hand — preserve this\n" + original)
+
+    init_pool(
+        registry_id="test-reg",
+        name="vehicles",
+        context="Cars.",
+        cwd=reg_home,
+        global_config_dir=global_dir,
+    )
+
+    assert "# managed by hand" in config_path.read_text()
+
+
+def test_init_pool_preserves_comment_above_registry_entry(tmp_path: Path) -> None:
+    """A comment above the target registry entry survives pool init."""
+    global_dir = tmp_path / "global"
+    reg_home = tmp_path / "registry"
+    init_registry(
+        pool_home=reg_home,
+        registry_id="test-reg",
+        context="Test.",
+        global_config_dir=global_dir,
+    )
+    config_path = global_dir / "config.yaml"
+    # Insert a comment above the registry entry.
+    text = config_path.read_text()
+    text = text.replace("  test-reg:\n", "  # scratch registry for testing\n  test-reg:\n")
+    config_path.write_text(text)
+
+    init_pool(
+        registry_id="test-reg",
+        name="vehicles",
+        context="Cars.",
+        cwd=reg_home,
+        global_config_dir=global_dir,
+    )
+
+    assert "# scratch registry for testing" in config_path.read_text()
