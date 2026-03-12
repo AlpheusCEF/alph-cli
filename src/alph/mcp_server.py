@@ -23,10 +23,13 @@ All tools follow the Basic Memory pattern:
 - MCP annotations declare read/write intent and idempotency
 """
 
+import importlib.metadata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+_MCP_SOURCE = f"alph-mcp/v{importlib.metadata.version('alph-cli')}"
 
 import fastmcp
 from mcp.types import ToolAnnotations
@@ -126,7 +129,7 @@ def tool_add_node(
         }
     result = create_node(
         pool_path=Path(pool_path),
-        source="mcp",
+        source=_MCP_SOURCE,
         node_type=node_type,
         context=context,
         creator=creator,

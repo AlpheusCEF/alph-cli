@@ -138,6 +138,47 @@ def test_registry_init_reports_set_as_default(tmp_path: Path, monkeypatch) -> No
     assert "default" in result.output.lower()
 
 
+def test_registry_init_suppresses_defaults_reminder_when_disabled(
+    tmp_path: Path, monkeypatch  # type: ignore[no-untyped-def]
+) -> None:
+    """alph registry init omits the 'not set as default' hint when defaults_reminder: false."""
+    global_dir = tmp_path / "global"
+    global_dir.mkdir(parents=True)
+    # Pre-seed a config with a default already set and defaults_reminder off.
+    (global_dir / "config.yaml").write_text(
+        "default_registry: existing\ndefaults_reminder: false\n"
+    )
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "init",
+        "--pool-home", str(tmp_path / "reg"),
+        "--id", "my-reg",
+        "--context", "Test",
+    ])
+    assert result.exit_code == 0
+    assert "to make it default" not in result.output
+    assert "not set as default" not in result.output
+
+
+def test_registry_init_shows_defaults_reminder_by_default(
+    tmp_path: Path, monkeypatch  # type: ignore[no-untyped-def]
+) -> None:
+    """alph registry init shows the 'not set as default' hint unless suppressed."""
+    global_dir = tmp_path / "global"
+    global_dir.mkdir(parents=True)
+    # Pre-seed a config with a default already set but no defaults_reminder key.
+    (global_dir / "config.yaml").write_text("default_registry: existing\n")
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "init",
+        "--pool-home", str(tmp_path / "reg"),
+        "--id", "my-reg",
+        "--context", "Test",
+    ])
+    assert result.exit_code == 0
+    assert "to make it default" in result.output
+
+
 def test_add_creates_node_file(tmp_path: Path) -> None:
     """alph add -c <text> creates a node file in the pool's snapshots/."""
     pool = _init_registry_and_pool(tmp_path)
@@ -1233,7 +1274,7 @@ def test_auto_pull_triggers_pull_on_rw_read(tmp_path: Path, monkeypatch) -> None
             patch("alph.cli.pull_remote_registry") as mock_pull:
         result = runner.invoke(app, ["list"])
     assert result.exit_code == 0, f"Expected success but got: {result.output}"
-    mock_pull.assert_called_once_with(clone_dir)
+    mock_pull.assert_called_once_with(clone_dir, ssh_command="")
 
 
 def test_no_auto_pull_when_explicitly_disabled(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

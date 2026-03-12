@@ -562,6 +562,18 @@ def test_clone_remote_registry_runs_git_clone(tmp_path: Path) -> None:
     assert "git@github.com:org/repo.git" in call_args
 
 
+def test_clone_remote_registry_passes_ssh_command_as_env(tmp_path: Path) -> None:
+    """clone_remote_registry sets GIT_SSH_COMMAND in env when ssh_command is given."""
+    clone_dir = tmp_path / "clone"
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    ssh_cmd = "ssh -i /Users/cpettet/.ssh/github_chasemp.pri -o IdentitiesOnly=yes"
+    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+        clone_remote_registry("git@github.com:org/repo.git", clone_dir, ssh_command=ssh_cmd)
+    call_kwargs = mock_run.call_args[1]
+    assert call_kwargs.get("env", {}).get("GIT_SSH_COMMAND") == ssh_cmd
+
+
 def test_clone_remote_registry_skips_existing(tmp_path: Path) -> None:
     """clone_remote_registry is a no-op when .git already exists."""
     clone_dir = tmp_path / "clone"
@@ -661,7 +673,7 @@ def test_clone_remote_registry_skips_checkout_if_already_on_branch(tmp_path: Pat
 
 
 def test_pull_remote_registry_runs_git_pull(tmp_path: Path) -> None:
-    """pull_remote_registry calls git pull --ff-only."""
+    """pull_remote_registry calls git pull --rebase to handle diverged branches."""
     (tmp_path / ".git").mkdir()
     mock_result = MagicMock()
     mock_result.returncode = 0
@@ -669,7 +681,32 @@ def test_pull_remote_registry_runs_git_pull(tmp_path: Path) -> None:
         pull_remote_registry(tmp_path)
     call_args = mock_run.call_args[0][0]
     assert "pull" in call_args
-    assert "--ff-only" in call_args
+    assert "--rebase" in call_args
+    assert "--ff-only" not in call_args
+
+
+def test_pull_remote_registry_passes_ssh_command_as_env(tmp_path: Path) -> None:
+    """pull_remote_registry sets GIT_SSH_COMMAND in env when ssh_command is given."""
+    (tmp_path / ".git").mkdir()
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    ssh_cmd = "ssh -i /Users/cpettet/.ssh/github_chasemp.pri -o IdentitiesOnly=yes"
+    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+        pull_remote_registry(tmp_path, ssh_command=ssh_cmd)
+    call_kwargs = mock_run.call_args[1]
+    assert call_kwargs.get("env", {}).get("GIT_SSH_COMMAND") == ssh_cmd
+
+
+def test_pull_remote_registry_no_ssh_command_by_default(tmp_path: Path) -> None:
+    """pull_remote_registry does not inject GIT_SSH_COMMAND when ssh_command is empty."""
+    (tmp_path / ".git").mkdir()
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+        pull_remote_registry(tmp_path)
+    call_kwargs = mock_run.call_args[1]
+    env = call_kwargs.get("env")
+    assert env is None or "GIT_SSH_COMMAND" not in env
 
 
 def test_pull_remote_registry_raises_on_not_git_repo(tmp_path: Path) -> None:
@@ -703,6 +740,18 @@ def test_push_remote_registry_runs_git_push(tmp_path: Path) -> None:
         push_remote_registry(tmp_path)
     call_args = mock_run.call_args[0][0]
     assert "push" in call_args
+
+
+def test_push_remote_registry_passes_ssh_command_as_env(tmp_path: Path) -> None:
+    """push_remote_registry sets GIT_SSH_COMMAND in env when ssh_command is given."""
+    (tmp_path / ".git").mkdir()
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    ssh_cmd = "ssh -i /Users/cpettet/.ssh/github_chasemp.pri -o IdentitiesOnly=yes"
+    with patch("alph.remote.subprocess.run", return_value=mock_result) as mock_run:
+        push_remote_registry(tmp_path, ssh_command=ssh_cmd)
+    call_kwargs = mock_run.call_args[1]
+    assert call_kwargs.get("env", {}).get("GIT_SSH_COMMAND") == ssh_cmd
 
 
 def test_push_remote_registry_raises_on_not_git_repo(tmp_path: Path) -> None:

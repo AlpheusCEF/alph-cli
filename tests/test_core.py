@@ -861,6 +861,25 @@ def test_generate_id_differs_for_different_inputs() -> None:
     assert id1 != id2
 
 
+def test_generate_id_is_stable_across_source_versions() -> None:
+    """generate_id produces the same ID regardless of version suffix in source.
+
+    A UA-style source like 'alph-cli/v0.1.24' must hash identically to
+    'alph-cli/v0.1.99' so that re-adding the same context after an upgrade
+    still triggers the duplicate check.
+    """
+    id1 = generate_id(source="alph-cli/v0.1.24", context="Oil change")
+    id2 = generate_id(source="alph-cli/v0.1.99", context="Oil change")
+    assert id1 == id2
+
+
+def test_generate_id_still_differs_for_different_source_base() -> None:
+    """generate_id distinguishes different source types even with version stripped."""
+    id1 = generate_id(source="alph-cli/v0.1.24", context="Oil change")
+    id2 = generate_id(source="alph-mcp/v0.1.24", context="Oil change")
+    assert id1 != id2
+
+
 def test_extract_frontmatter_returns_parsed_yaml() -> None:
     """extract_frontmatter returns a dict of YAML fields from a markdown file."""
     text = "---\nschema_version: '1'\ncontext: Oil change\n---\nSome body text."
@@ -1598,6 +1617,38 @@ def test_load_config_branch_defaults_empty(tmp_path: Path) -> None:
     })
     cfg = load_config(global_config_dir=global_dir)
     assert cfg.registries["remote-reg"].branch == ""
+
+
+def test_load_config_reads_ssh_command_from_yaml(tmp_path: Path) -> None:
+    """load_config picks up ssh_command from registry config YAML."""
+    global_dir = tmp_path / "global"
+    ssh_cmd = "ssh -i /Users/cpettet/.ssh/github_chasemp.pri -o IdentitiesOnly=yes"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+                "ssh_command": ssh_cmd,
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].ssh_command == ssh_cmd
+
+
+def test_load_config_ssh_command_defaults_empty(tmp_path: Path) -> None:
+    """load_config defaults ssh_command to empty string when omitted."""
+    global_dir = tmp_path / "global"
+    _write_config(global_dir / "config.yaml", {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote test.",
+            }
+        }
+    })
+    cfg = load_config(global_config_dir=global_dir)
+    assert cfg.registries["remote-reg"].ssh_command == ""
 
 
 # ---------------------------------------------------------------------------

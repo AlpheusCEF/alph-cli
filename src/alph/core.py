@@ -50,6 +50,7 @@ class RegistryEntry:
     auto_push: bool = False  # push after commit (rw remote only)
     auto_pull: bool = False  # pull before read (rw remote only)
     branch: str = ""  # git branch for RO reads and RW clone checkout
+    ssh_command: str = ""  # overrides GIT_SSH_COMMAND for all git ops on this registry
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class AlphConfig:
     default_registry: str = ""
     default_pool: str = ""
     register_subdir_pools: bool = False
+    defaults_reminder: bool = True
     registries: dict[str, RegistryEntry] = field(default_factory=dict)
 
 
@@ -414,22 +416,35 @@ def validate_registry(config: dict[str, object]) -> ValidationResult:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_source_for_hash(source: str) -> str:
+    """Strip version suffix from a UA-style source string for stable hashing.
+
+    ``"alph-cli/v0.1.24"`` → ``"alph-cli"`` so the same context added by
+    different versions of the tool produces the same ID.
+    """
+    return source.split("/")[0] if "/" in source else source
+
+
 def generate_id(*, source: str, context: str) -> str:
     """Generate a deterministic 12-character node ID.
 
     The ID is the first 12 hex characters of SHA-256 over the concatenation
-    of source and context. Timestamp is intentionally excluded so that
-    submitting the same context twice (e.g. re-running a CLI command)
+    of the normalized source and context. Timestamp is intentionally excluded
+    so that submitting the same context twice (e.g. re-running a CLI command)
     produces the same ID and triggers the duplicate check.
 
+    The source is normalized before hashing: a UA-style string like
+    ``"alph-cli/v0.1.24"`` hashes as ``"alph-cli"`` so version upgrades do
+    not change the ID of an otherwise identical node.
+
     Args:
-        source: Originating system (e.g. ``"cli"``, ``"slack"``).
+        source: Originating system (e.g. ``"alph-cli/v0.1.24"``, ``"alph-mcp/v0.1.24"``).
         context: Human/LLM-readable context description.
 
     Returns:
         12-character lowercase hex string.
     """
-    raw = f"{source}{context}"
+    raw = f"{_normalize_source_for_hash(source)}{context}"
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
@@ -509,6 +524,7 @@ def load_config(
                         auto_push=bool(v["auto_push"]) if "auto_push" in v else _rw_default,
                         auto_pull=bool(v["auto_pull"]) if "auto_pull" in v else _rw_default,
                         branch=str(v.get("branch", "")),
+                        ssh_command=str(v.get("ssh_command", "")),
                     )
         merged.update({k: v for k, v in data.items() if k != "registries"})
 
@@ -551,6 +567,7 @@ def load_config(
         default_registry=str(merged.get("default_registry", "")),
         default_pool=str(merged.get("default_pool", "")),
         register_subdir_pools=bool(merged.get("register_subdir_pools", False)),
+        defaults_reminder=bool(merged.get("defaults_reminder", True)),
         registries=accumulated_registries,
     )
 
@@ -561,12 +578,12 @@ def load_config(
 
 _VALID_ROOT_KEYS: frozenset[str] = frozenset({
     "creator", "auto_commit", "default_registry", "default_pool",
-    "register_subdir_pools", "registries",
+    "register_subdir_pools", "defaults_reminder", "registries",
 })
 
 _VALID_REGISTRY_ENTRY_KEYS: frozenset[str] = frozenset({
     "pool_home", "context", "name", "pools", "mode",
-    "clone_path", "auto_push", "auto_pull", "branch",
+    "clone_path", "auto_push", "auto_pull", "branch", "ssh_command",
 })
 
 _LEGACY_REGISTRY_KEYS: dict[str, str] = {

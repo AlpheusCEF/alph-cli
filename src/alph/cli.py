@@ -65,6 +65,9 @@ def _console_width() -> int:
 
 console = Console(width=_console_width())
 
+_CLI_VERSION = importlib.metadata.version("alph-cli")
+_CLI_SOURCE = f"alph-cli/v{_CLI_VERSION}"
+
 _verbose: bool = False
 _registry_override: str | None = None
 _branch_override: str | None = None
@@ -325,10 +328,11 @@ def _pool_context(
             else default_clone_dir(ref.remote_url)
         )
         rw_branch = _branch_override or (entry.branch if entry and entry.branch else "")
-        clone_remote_registry(ref.remote_url, clone_dir, branch=rw_branch)
+        ssh_cmd = entry.ssh_command if entry else ""
+        clone_remote_registry(ref.remote_url, clone_dir, branch=rw_branch, ssh_command=ssh_cmd)
         if entry and entry.auto_pull and (clone_dir / ".git").is_dir():
             try:
-                pull_remote_registry(clone_dir)
+                pull_remote_registry(clone_dir, ssh_command=ssh_cmd)
             except RuntimeError as exc:
                 console.print(f"[yellow]warning:[/yellow] auto-pull failed: {exc}")
         pool_path = clone_dir / ref.subpath if ref.subpath else clone_dir
@@ -363,8 +367,9 @@ def _pull_if_requested(
         Path(entry.clone_path) if entry and entry.clone_path
         else default_clone_dir(ref.remote_url)
     )
+    ssh_cmd = entry.ssh_command if entry else ""
     try:
-        pull_remote_registry(clone_dir)
+        pull_remote_registry(clone_dir, ssh_command=ssh_cmd)
     except FileNotFoundError:
         console.print(
             f"[yellow]warning:[/yellow] no clone found at {clone_dir}. "
@@ -392,7 +397,7 @@ def _auto_push_if_configured(
         else default_clone_dir(ref.remote_url)
     )
     try:
-        push_remote_registry(clone_dir)
+        push_remote_registry(clone_dir, ssh_command=entry.ssh_command)
         console.print("[dim]auto-pushed to remote.[/dim]")
     except (FileNotFoundError, RuntimeError) as exc:
         console.print(f"[yellow]warning:[/yellow] auto-push failed: {exc}")
@@ -438,6 +443,7 @@ def registry_init(
     If no default registry is set yet, this one becomes the default.
     """
     _apply_verbose(verbose)
+    cfg = _load_cli_config()
     result = init_registry(
         pool_home=Path(pool_home),
         registry_id=registry_id,
@@ -465,7 +471,7 @@ def registry_init(
     console.print(f"  config: {result.config_path}")
     if result.set_as_default:
         console.print("  [dim]set as default registry[/dim]")
-    else:
+    elif cfg.defaults_reminder:
         console.print("  [dim](not set as default — another default registry already exists)[/dim]")
         console.print(f"  [dim]to make it default: set default_registry: {registry_id} in ~/.config/alph/config.yaml[/dim]")
 
@@ -655,7 +661,7 @@ def registry_clone(
     )
     try:
         created = clone_remote_registry(
-            ref.remote_url, target, branch=entry.branch,
+            ref.remote_url, target, branch=entry.branch, ssh_command=entry.ssh_command,
         )
     except RuntimeError as exc:
         console.print(f"[red]error:[/red] {exc}")
@@ -682,7 +688,7 @@ def registry_pull(
 ) -> None:
     """Pull latest changes for a cloned remote registry.
 
-    Runs git pull --ff-only in the local clone directory.
+    Runs git pull --rebase in the local clone directory.
     """
     _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
@@ -716,7 +722,7 @@ def registry_pull(
         else default_clone_dir(ref.remote_url)
     )
     try:
-        pull_remote_registry(clone_dir)
+        pull_remote_registry(clone_dir, ssh_command=entry.ssh_command)
     except FileNotFoundError:
         console.print(
             f"[red]error:[/red] no clone found at {clone_dir}. "
@@ -941,7 +947,7 @@ def cmd_add(
     with _pool_context(pool_str, cfg, writable=True) as resolved_pool:
         result = create_node(
             pool_path=resolved_pool,
-            source="cli",
+            source=_CLI_SOURCE,
             node_type=node_type,
             context=context,
             creator=resolved_creator,

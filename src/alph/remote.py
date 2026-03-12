@@ -509,12 +509,20 @@ def _checkout_branch(clone_dir: Path, branch: str) -> None:
     logger.debug("checked out branch: %s (from origin)", branch)
 
 
+def _ssh_env(ssh_command: str) -> dict[str, str] | None:
+    """Return an env dict with GIT_SSH_COMMAND set, or None if ssh_command is empty."""
+    if not ssh_command:
+        return None
+    return {**os.environ, "GIT_SSH_COMMAND": ssh_command}
+
+
 def clone_remote_registry(
     remote_url: str,
     clone_dir: Path,
     *,
     depth: int = 1,
     branch: str = "",
+    ssh_command: str = "",
 ) -> bool:
     """Clone a remote git repository for RW access.
 
@@ -526,6 +534,7 @@ def clone_remote_registry(
         clone_dir: Local directory to clone into.
         depth: Clone depth (default 1 for shallow clone).
         branch: Git branch to check out. Empty string means default branch.
+        ssh_command: Value for GIT_SSH_COMMAND env var. Empty means use system default.
 
     Returns:
         True if a new clone was created, False if one already existed.
@@ -546,7 +555,10 @@ def clone_remote_registry(
         cmd.extend(["--branch", branch])
     cmd.extend([remote_url, str(clone_dir)])
     logger.debug("cloning: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=120,
+        env=_ssh_env(ssh_command),
+    )
     if result.returncode != 0:
         raise RuntimeError(
             f"git clone failed (exit {result.returncode}): "
@@ -555,8 +567,12 @@ def clone_remote_registry(
     return True
 
 
-def pull_remote_registry(clone_dir: Path) -> None:
+def pull_remote_registry(clone_dir: Path, *, ssh_command: str = "") -> None:
     """Pull latest changes in an existing clone.
+
+    Args:
+        clone_dir: Local clone directory.
+        ssh_command: Value for GIT_SSH_COMMAND env var. Empty means use system default.
 
     Raises:
         RuntimeError: If the pull fails.
@@ -568,8 +584,9 @@ def pull_remote_registry(clone_dir: Path) -> None:
         )
     logger.debug("pulling: %s", clone_dir)
     result = subprocess.run(
-        ["git", "-C", str(clone_dir), "pull", "--ff-only"],
+        ["git", "-C", str(clone_dir), "pull", "--rebase"],
         capture_output=True, text=True, timeout=60,
+        env=_ssh_env(ssh_command),
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -578,8 +595,12 @@ def pull_remote_registry(clone_dir: Path) -> None:
         )
 
 
-def push_remote_registry(clone_dir: Path) -> None:
+def push_remote_registry(clone_dir: Path, *, ssh_command: str = "") -> None:
     """Push commits from a local clone to the remote.
+
+    Args:
+        clone_dir: Local clone directory.
+        ssh_command: Value for GIT_SSH_COMMAND env var. Empty means use system default.
 
     Raises:
         RuntimeError: If the push fails.
@@ -592,6 +613,7 @@ def push_remote_registry(clone_dir: Path) -> None:
     result = subprocess.run(
         ["git", "-C", str(clone_dir), "push"],
         capture_output=True, text=True, timeout=60,
+        env=_ssh_env(ssh_command),
     )
     if result.returncode != 0:
         raise RuntimeError(
