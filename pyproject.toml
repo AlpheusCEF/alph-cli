@@ -1,6 +1,6 @@
 [project]
 name = "alph-cli"
-version = "0.1.30"
+version = "0.1.31"
 description = "Alpheus Context Engine Framework CLI"
 authors = [
     {name = "Chase Pettet"}
