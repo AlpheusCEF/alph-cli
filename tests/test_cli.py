@@ -1052,6 +1052,52 @@ def test_registry_status_unknown(tmp_path: Path, monkeypatch) -> None:  # type: 
     assert "not found" in result.output
 
 
+def test_registry_status_all_iterates_every_registry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry status all shows status for every configured registry."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    local_home = tmp_path / "local"
+    local_home.mkdir()
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-reg": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+            },
+            "local-reg": {
+                "pool_home": str(local_home),
+                "context": "Local.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = ""
+    with patch("subprocess.run", return_value=mock_result):
+        result = runner.invoke(app, [
+            "registry", "status", "all", "--cwd", str(tmp_path),
+        ])
+    assert result.exit_code == 0
+    assert "remote-reg" in result.output
+    assert "local-reg" in result.output
+
+
+def test_registry_status_all_empty(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry status all with no registries prints a message."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {"registries": {}})
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "status", "all", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code == 0
+    assert "no registries" in result.output
+
+
 # ---------------------------------------------------------------------------
 # RW clone-based pool context
 # ---------------------------------------------------------------------------

@@ -813,35 +813,10 @@ def registry_push(
     console.print(f"[green]pushed:[/green] {reg_id} ({clone_dir})")
 
 
-@registry_app.command("status")
-def registry_status(
-    registry_id: str | None = typer.Argument(
-        None, help="Registry ID or name to inspect. Defaults to default_registry.",
-    ),
-    cwd: Path | None = typer.Option(
-        None, "--cwd", hidden=True,
-        help="Working directory for config lookup.",
-    ),
-    verbose: bool = _VERBOSE_OPT,
-) -> None:
-    """Show status of a registry — mode, clone state, branch, auto_push, and path details."""
-    _apply_verbose(verbose)
-    resolved_cwd = cwd if cwd is not None else Path.cwd()
-    cfg = _load_cli_config(cwd=resolved_cwd)
-    resolved_id = _resolve_registry_id(registry_id, cfg)
+def _status_single_registry(reg_id: str, cfg: AlphConfig) -> None:
+    """Print status for one registry by ID."""
+    import subprocess
 
-    from alph.core import find_registry_config
-
-    found = find_registry_config(resolved_id, cfg=cfg)
-    if found is None:
-        known = ", ".join(cfg.registries.keys()) or "(none)"
-        console.print(
-            f"[red]error:[/red] {resolved_id} not found. "
-            f"Known registries: {known}"
-        )
-        raise typer.Exit(code=1)
-
-    reg_id, _ = found
     entry = cfg.registries[reg_id]
     mode = effective_mode(entry)
 
@@ -863,8 +838,6 @@ def registry_status(
         lines.append(f"clone_path:  {clone_dir}")
 
         if (clone_dir / ".git").is_dir():
-            # Check working tree state.
-            import subprocess
             git_status = subprocess.run(
                 ["git", "-C", str(clone_dir), "status", "--porcelain"],
                 capture_output=True, text=True, timeout=10,
@@ -872,7 +845,6 @@ def registry_status(
             dirty = bool(git_status.stdout.strip()) if git_status.returncode == 0 else False
             state = "cloned (dirty)" if dirty else "cloned (clean)"
             lines.append(f"clone_state: {state}")
-            # Count commits ahead of remote tracking branch.
             git_unpushed = subprocess.run(
                 ["git", "-C", str(clone_dir), "log", "@{u}..HEAD", "--oneline"],
                 capture_output=True, text=True, timeout=10,
@@ -892,6 +864,51 @@ def registry_status(
         lines.append(f"exists:      {str(exists).lower()}")
 
     console.print("\n".join(lines))
+
+
+@registry_app.command("status")
+def registry_status(
+    registry_id: str | None = typer.Argument(
+        None, help="Registry ID or name to inspect. Defaults to default_registry. Use 'all' to show every registry.",
+    ),
+    cwd: Path | None = typer.Option(
+        None, "--cwd", hidden=True,
+        help="Working directory for config lookup.",
+    ),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Show status of a registry — mode, clone state, branch, auto_push, and path details.
+
+    Pass 'all' to iterate every configured registry.
+    """
+    _apply_verbose(verbose)
+    resolved_cwd = cwd if cwd is not None else Path.cwd()
+    cfg = _load_cli_config(cwd=resolved_cwd)
+    resolved_id = _resolve_registry_id(registry_id, cfg)
+
+    if resolved_id == "all":
+        if not cfg.registries:
+            console.print("no registries found.")
+            return
+        for i, rid in enumerate(cfg.registries):
+            if i > 0:
+                console.print("")
+            _status_single_registry(rid, cfg)
+        return
+
+    from alph.core import find_registry_config
+
+    found = find_registry_config(resolved_id, cfg=cfg)
+    if found is None:
+        known = ", ".join(cfg.registries.keys()) or "(none)"
+        console.print(
+            f"[red]error:[/red] {resolved_id} not found. "
+            f"Known registries: {known}"
+        )
+        raise typer.Exit(code=1)
+
+    reg_id, _ = found
+    _status_single_registry(reg_id, cfg)
 
 
 @pool_app.callback()
