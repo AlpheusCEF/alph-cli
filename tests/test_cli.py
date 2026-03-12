@@ -1528,3 +1528,219 @@ def test_examples_command_runs_and_shows_content() -> None:
     assert "registry init" in result.output
     assert "pool init" in result.output
     assert "alph add" in result.output
+
+
+# ---------------------------------------------------------------------------
+# registry push
+# ---------------------------------------------------------------------------
+
+
+def test_registry_push_calls_git_push(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry push pushes local commits to the remote."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-rw": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote RW.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    with patch("alph.remote.subprocess.run", return_value=mock_result):
+        result = runner.invoke(app, [
+            "registry", "push", "remote-rw", "--cwd", str(tmp_path),
+        ])
+    assert result.exit_code == 0
+    assert "pushed" in result.output
+
+
+def test_registry_push_errors_no_clone(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry push errors when no clone exists."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-rw": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote RW.",
+                "mode": "rw",
+                "clone_path": str(tmp_path / "no-such-clone"),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "push", "remote-rw", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "no clone found" in result.output
+
+
+def test_registry_push_errors_for_local(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry push errors when the registry is local."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "registries": {
+            "local-reg": {
+                "pool_home": str(tmp_path / "local"),
+                "context": "Local.",
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "push", "local-reg", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "local registry" in result.output
+
+
+def test_registry_push_errors_for_ro(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry push errors when registry is RO."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-ro": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote RO.",
+                "mode": "ro",
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, [
+        "registry", "push", "remote-ro", "--cwd", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+    assert "read-only" in result.output
+
+
+# ---------------------------------------------------------------------------
+# registry status — unpushed commits
+# ---------------------------------------------------------------------------
+
+
+def test_registry_status_shows_unpushed_commits(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry status shows unpushed commit count when local is ahead of remote."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-rw": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote RW.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+                "auto_push": True,
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+
+    def fake_subprocess_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        mock = MagicMock()
+        mock.returncode = 0
+        if "status" in cmd:
+            mock.stdout = ""  # clean working tree
+        elif "@{u}" in " ".join(cmd):
+            mock.stdout = "abc1234 add node\ndef5678 fix typo\n"  # 2 unpushed
+        else:
+            mock.stdout = ""
+        return mock
+
+    with patch("subprocess.run", side_effect=fake_subprocess_run):
+        result = runner.invoke(app, [
+            "registry", "status", "remote-rw", "--cwd", str(tmp_path),
+        ])
+    assert result.exit_code == 0
+    assert "unpushed:    2" in result.output
+
+
+def test_registry_status_no_unpushed_when_synced(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph registry status shows unpushed: 0 when clone is in sync with remote."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-rw": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote RW.",
+                "mode": "rw",
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+
+    def fake_subprocess_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = ""  # empty = no unpushed
+        return mock
+
+    with patch("subprocess.run", side_effect=fake_subprocess_run):
+        result = runner.invoke(app, [
+            "registry", "status", "remote-rw", "--cwd", str(tmp_path),
+        ])
+    assert result.exit_code == 0
+    assert "unpushed:    0" in result.output
+
+
+# ---------------------------------------------------------------------------
+# auto-push failure message elevation
+# ---------------------------------------------------------------------------
+
+
+def test_auto_push_failure_prints_error_and_recovery_hint(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """When auto-push fails, error (not warning) is printed with recovery hint."""
+    global_dir = tmp_path / "global"
+    clone_dir = tmp_path / "clone"
+    (clone_dir / ".git").mkdir(parents=True)
+    pool_in_clone = clone_dir / "data" / "vehicles"
+    (pool_in_clone / "snapshots").mkdir(parents=True)
+    (pool_in_clone / "live").mkdir(parents=True)
+    _write_global_config(global_dir, {
+        "registries": {
+            "remote-rw": {
+                "pool_home": "git@github.com:org/repo.git:/data",
+                "context": "Remote RW.",
+                "mode": "rw",
+                "auto_push": True,
+                "clone_path": str(clone_dir),
+            },
+        },
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+
+    def fake_subprocess_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        mock = MagicMock()
+        if "push" in cmd:
+            mock.returncode = 128
+            mock.stderr = "ERROR: Permission denied."
+        else:
+            mock.returncode = 0
+            mock.stdout = ""
+        return mock
+
+    monkeypatch.chdir(tmp_path)
+    with patch("alph.cli.clone_remote_registry", return_value=False), \
+            patch("alph.remote.subprocess.run", side_effect=fake_subprocess_run):
+        result = runner.invoke(app, [
+            "add",
+            "--pool", "git@github.com:org/repo.git:/data/vehicles",
+            "--creator", "test@example.com",
+            "-c", "A node that will fail to push.",
+        ])
+    assert "error" in result.output.lower()
+    assert "registry push" in result.output

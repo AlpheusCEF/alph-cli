@@ -379,6 +379,14 @@ def _pull_if_requested(
         console.print(f"[yellow]warning:[/yellow] pull failed: {exc}")
 
 
+def _registry_id_for_entry(entry: RegistryEntry, cfg: AlphConfig) -> str | None:
+    """Return the registry ID for a given entry, or None if not found."""
+    for reg_id, reg_entry in cfg.registries.items():
+        if reg_entry is entry:
+            return reg_id
+    return None
+
+
 def _auto_push_if_configured(
     pool_str: str, cfg: AlphConfig,
 ) -> None:
@@ -400,7 +408,9 @@ def _auto_push_if_configured(
         push_remote_registry(clone_dir, ssh_command=entry.ssh_command)
         console.print("[dim]auto-pushed to remote.[/dim]")
     except (FileNotFoundError, RuntimeError) as exc:
-        console.print(f"[yellow]warning:[/yellow] auto-push failed: {exc}")
+        reg_id = _registry_id_for_entry(entry, cfg)
+        hint = f" Run 'alph registry push {reg_id}' to retry." if reg_id else ""
+        console.print(f"[red]error:[/red] auto-push failed: {exc}{hint}")
 
 
 def _require_creator(creator_flag: str | None, cfg: AlphConfig) -> str:
@@ -735,6 +745,74 @@ def registry_pull(
     console.print(f"[green]pulled:[/green] {reg_id} ({clone_dir})")
 
 
+@registry_app.command("push")
+def registry_push(
+    registry_id: str | None = typer.Argument(
+        None, help="Registry ID or name to push. Defaults to default_registry.",
+    ),
+    cwd: Path | None = typer.Option(
+        None, "--cwd", hidden=True,
+        help="Working directory for config lookup.",
+    ),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Push local commits in a cloned remote registry to the remote.
+
+    Use this to recover after a failed auto-push, or to push explicitly
+    when auto_push is disabled.
+    """
+    _apply_verbose(verbose)
+    resolved_cwd = cwd if cwd is not None else Path.cwd()
+    cfg = _load_cli_config(cwd=resolved_cwd)
+    resolved_id = _resolve_registry_id(registry_id, cfg)
+
+    from alph.core import find_registry_config
+
+    found = find_registry_config(resolved_id, cfg=cfg)
+    if found is None:
+        known = ", ".join(cfg.registries.keys()) or "(none)"
+        console.print(
+            f"[red]error:[/red] {resolved_id} not found. "
+            f"Known registries: {known}"
+        )
+        raise typer.Exit(code=1)
+
+    reg_id, _ = found
+    entry = cfg.registries[reg_id]
+
+    if not is_remote_registry(entry.pool_home):
+        console.print(
+            f"[red]error:[/red] {reg_id} is a local registry — "
+            "push is only for remote registries."
+        )
+        raise typer.Exit(code=1)
+
+    mode = effective_mode(entry)
+    if mode != "rw":
+        console.print(
+            f"[red]error:[/red] {reg_id} is read-only — push requires mode: rw."
+        )
+        raise typer.Exit(code=1)
+
+    ref = parse_remote_registry(entry.pool_home)
+    clone_dir = (
+        Path(entry.clone_path) if entry.clone_path
+        else default_clone_dir(ref.remote_url)
+    )
+    try:
+        push_remote_registry(clone_dir, ssh_command=entry.ssh_command)
+    except FileNotFoundError:
+        console.print(
+            f"[red]error:[/red] no clone found at {clone_dir}. "
+            f"Run 'alph registry clone {reg_id}' first."
+        )
+        raise typer.Exit(code=1) from None
+    except RuntimeError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from None
+    console.print(f"[green]pushed:[/green] {reg_id} ({clone_dir})")
+
+
 @registry_app.command("status")
 def registry_status(
     registry_id: str | None = typer.Argument(
@@ -794,6 +872,14 @@ def registry_status(
             dirty = bool(git_status.stdout.strip()) if git_status.returncode == 0 else False
             state = "cloned (dirty)" if dirty else "cloned (clean)"
             lines.append(f"clone_state: {state}")
+            # Count commits ahead of remote tracking branch.
+            git_unpushed = subprocess.run(
+                ["git", "-C", str(clone_dir), "log", "@{u}..HEAD", "--oneline"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if git_unpushed.returncode == 0:
+                unpushed = sum(1 for line in git_unpushed.stdout.splitlines() if line.strip())
+                lines.append(f"unpushed:    {unpushed}")
         else:
             lines.append("clone_state: not cloned")
 

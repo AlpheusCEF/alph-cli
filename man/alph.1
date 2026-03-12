@@ -165,11 +165,18 @@ Local directory to clone into. Default: \fI~/.cache/alph/clones/<hash>/\fR.
 .RE
 .TP
 .B alph registry pull \fR[\fIREGISTRY_ID\fR]
-Pull latest changes for a cloned remote registry (git pull \-\-ff\-only).
+Pull latest changes for a cloned remote registry (git pull \-\-rebase).
+Defaults to \fBdefault_registry\fR when no argument is given.
+.TP
+.B alph registry push \fR[\fIREGISTRY_ID\fR]
+Push local commits in a cloned remote registry to the remote.
+Use this to recover after a failed auto-push, or to push explicitly when
+\fBauto_push\fR is disabled.
 Defaults to \fBdefault_registry\fR when no argument is given.
 .TP
 .B alph registry status \fR[\fIREGISTRY_ID\fR]
-Show registry status: mode, clone state, branch, auto_push, and path details.
+Show registry status: mode, clone state, unpushed commit count, branch, auto_push,
+and path details.
 Defaults to \fBdefault_registry\fR when no argument is given.
 .SS "Pool commands (alph pool)"
 .PP
