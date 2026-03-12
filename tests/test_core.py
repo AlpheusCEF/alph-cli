@@ -643,6 +643,20 @@ def test_resolve_pool_name_finds_pool_in_default_registry(tmp_path: Path) -> Non
     assert resolve_pool_name("vehicles", config) == reg_home / "vehicles"
 
 
+def test_resolve_pool_name_finds_pool_by_directory_when_not_in_pools_dict(tmp_path: Path) -> None:
+    """resolve_pool_name finds a pool that exists on disk even without a pools: entry."""
+    reg_home = tmp_path / "registry"
+    pool_dir = reg_home / "vehicles"
+    pool_dir.mkdir(parents=True)
+    config = AlphConfig(
+        default_registry="household",
+        registries={
+            "household": RegistryEntry(pool_home=str(reg_home)),  # no pools: key
+        },
+    )
+    assert resolve_pool_name("vehicles", config) == pool_dir
+
+
 def test_resolve_pool_name_returns_none_when_not_found(tmp_path: Path) -> None:
     """resolve_pool_name returns None when no registry has the named pool."""
     reg_home = tmp_path / "registry"

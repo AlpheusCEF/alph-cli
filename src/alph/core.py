@@ -905,8 +905,11 @@ def resolve_pool_name(name: str, cfg: AlphConfig) -> Path | None:
         registries_ordered.sort(key=lambda kv: 0 if kv[0] == cfg.default_registry else 1)
 
     for _reg_id, entry in registries_ordered:
-        if isinstance(entry.pools, dict) and name in entry.pools:
-            return Path(entry.pool_home) / name
+        if is_remote_registry(entry.pool_home):
+            continue
+        candidate = Path(entry.pool_home) / name
+        if (isinstance(entry.pools, dict) and name in entry.pools) or candidate.is_dir():
+            return candidate
     return None
 
 
