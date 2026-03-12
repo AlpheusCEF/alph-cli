@@ -50,7 +50,7 @@ from alph.remote import (
 )
 
 _help_settings = {"help_option_names": ["-h", "--help"]}
-app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.\n\nRun 'alph examples' for structured usage walkthroughs.", context_settings=_help_settings, add_completion=False)
+app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.\n\nRun 'alph examples' for structured usage walkthroughs.", context_settings=_help_settings)
 registry_app = typer.Typer(help="Registry commands.", invoke_without_command=True, context_settings=_help_settings)
 pool_app = typer.Typer(help="Pool commands.", invoke_without_command=True, context_settings=_help_settings)
 config_app = typer.Typer(help="Config file commands.", invoke_without_command=True, context_settings=_help_settings)
