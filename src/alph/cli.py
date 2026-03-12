@@ -1249,10 +1249,12 @@ def config_check(
     cwd: Path | None = typer.Option(None, "--cwd", hidden=True, help="Working directory for config path walk."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
-    """Check all config files for unknown or legacy keys.
+    """Check all config files for unknown or legacy keys, and referential integrity.
 
     Reads every config file in the discovery tree and reports unrecognized
     keys that may indicate typos (e.g. 'clone_dir' instead of 'clone_path').
+    Also checks that defaults like default_registry point to registries that
+    actually exist in the merged config.
     """
     _apply_verbose(verbose)
     resolved_cwd = cwd if cwd is not None else Path.cwd()
@@ -1268,6 +1270,10 @@ def config_check(
         warnings = validate_config_keys(data)
         for w in warnings:
             all_warnings.append(f"{s.path}: {w}")
+    cfg = _load_cli_config(cwd=resolved_cwd)
+    from alph.core import validate_config_integrity
+    for w in validate_config_integrity(cfg):
+        all_warnings.append(w)
     if all_warnings:
         for w in all_warnings:
             console.print(f"[yellow]warning:[/yellow] {w}")

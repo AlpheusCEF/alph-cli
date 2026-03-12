@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Reserved names — cannot be used as registry IDs or pool names
 # ---------------------------------------------------------------------------
 
-RESERVED_NAMES: frozenset[str] = frozenset({"all"})
+RESERVED_NAMES: frozenset[str] = frozenset({"all", "alph"})
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -589,6 +589,20 @@ _VALID_REGISTRY_ENTRY_KEYS: frozenset[str] = frozenset({
 _LEGACY_REGISTRY_KEYS: dict[str, str] = {
     "home": "pool_home",
 }
+
+
+def validate_config_integrity(cfg: "AlphConfig") -> list[str]:
+    """Check referential integrity of a fully merged AlphConfig.
+
+    Returns a list of human-readable warning strings. An empty list means
+    the config is internally consistent.
+    """
+    warnings: list[str] = []
+    if cfg.default_registry and cfg.default_registry not in cfg.registries:
+        warnings.append(
+            f"default_registry '{cfg.default_registry}' is not defined in registries"
+        )
+    return warnings
 
 
 def validate_config_keys(data: dict[str, object]) -> list[str]:

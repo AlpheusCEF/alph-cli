@@ -1465,6 +1465,20 @@ def test_config_check_clean_config(tmp_path: Path, monkeypatch) -> None:  # type
     assert "no issues" in result.output.lower() or "ok" in result.output.lower()
 
 
+def test_config_check_warns_on_missing_default_registry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph config check fails when default_registry points to a non-existent registry."""
+    global_dir = tmp_path / "global"
+    _write_global_config(global_dir, {
+        "creator": "a@b.com",
+        "default_registry": "ghost",
+    })
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    result = runner.invoke(app, ["config", "check", "--cwd", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "default_registry" in result.output
+    assert "ghost" in result.output
+
+
 def test_config_check_detects_unknown_key(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """alph config check flags unknown keys."""
     global_dir = tmp_path / "global"

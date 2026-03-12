@@ -1723,6 +1723,11 @@ def test_reserved_names_includes_all() -> None:
     assert "all" in RESERVED_NAMES
 
 
+def test_reserved_names_includes_alph() -> None:
+    """'alph' is in the reserved names set."""
+    assert "alph" in RESERVED_NAMES
+
+
 def test_init_registry_writes_remote_fields_to_config(tmp_path: Path) -> None:
     """init_registry writes mode, clone_path, branch, auto_push, auto_pull."""
     global_dir = tmp_path / "global"
@@ -2065,6 +2070,52 @@ def test_validate_config_keys_detects_legacy_home_key(tmp_path: Path) -> None:
     assert len(warnings) == 1
     assert "home" in warnings[0]
     assert "pool_home" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# validate_config_integrity — referential integrity on merged config
+# ---------------------------------------------------------------------------
+
+
+def test_validate_config_integrity_warns_on_missing_default_registry() -> None:
+    """validate_config_integrity warns when default_registry names an unknown registry."""
+    from alph.core import AlphConfig, validate_config_integrity
+
+    cfg = AlphConfig(default_registry="ghost", registries={})
+    warnings = validate_config_integrity(cfg)
+    assert len(warnings) == 1
+    assert "default_registry" in warnings[0]
+    assert "ghost" in warnings[0]
+
+
+def test_validate_config_integrity_clean_when_default_registry_exists() -> None:
+    """validate_config_integrity returns no warnings when default_registry is valid."""
+    from alph.core import AlphConfig, RegistryEntry, validate_config_integrity
+
+    cfg = AlphConfig(
+        default_registry="my-reg",
+        registries={"my-reg": RegistryEntry(pool_home=Path("/p"), context="c")},
+    )
+    warnings = validate_config_integrity(cfg)
+    assert warnings == []
+
+
+def test_validate_config_integrity_clean_when_no_defaults_set() -> None:
+    """validate_config_integrity returns no warnings when no defaults are configured."""
+    from alph.core import AlphConfig, validate_config_integrity
+
+    cfg = AlphConfig()
+    warnings = validate_config_integrity(cfg)
+    assert warnings == []
+
+
+def test_validate_config_integrity_clean_when_default_registry_empty() -> None:
+    """validate_config_integrity ignores empty default_registry string."""
+    from alph.core import AlphConfig, validate_config_integrity
+
+    cfg = AlphConfig(default_registry="", registries={})
+    warnings = validate_config_integrity(cfg)
+    assert warnings == []
 
 
 # ---------------------------------------------------------------------------
