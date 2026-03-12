@@ -93,6 +93,53 @@ def test_pool_list_errors_when_registry_not_found(tmp_path: Path) -> None:
     assert "ghost" in result.output
 
 
+def test_pool_list_shows_remote_pools_for_ro_registry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph pool list queries the forge API for RO remote registries and shows discovered pools."""
+    from unittest.mock import MagicMock, patch
+
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    runner.invoke(app, [
+        "registry", "init",
+        "--pool-home", "git@github.com:org/repo.git:/registry",
+        "--id", "demo",
+        "--context", "Demo remote registry",
+        "--mode", "ro",
+    ])
+
+    mock_provider = MagicMock()
+    with (
+        patch("alph.cli.provider_for_url", return_value=mock_provider),
+        patch("alph.cli.fetch_remote_pools_cached", return_value=["vehicles", "appliances"]),
+    ):
+        result = runner.invoke(app, ["pool", "list", "--registry", "demo", "--cwd", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "vehicles" in result.output
+    assert "appliances" in result.output
+
+
+def test_pool_list_shows_no_pools_when_remote_discovery_fails(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph pool list falls back gracefully when the forge API is unavailable."""
+    from unittest.mock import patch
+
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
+    runner.invoke(app, [
+        "registry", "init",
+        "--pool-home", "git@github.com:org/repo.git:/registry",
+        "--id", "demo",
+        "--context", "Demo remote registry",
+        "--mode", "ro",
+    ])
+
+    with patch("alph.cli.provider_for_url", side_effect=Exception("no token")):
+        result = runner.invoke(app, ["pool", "list", "--registry", "demo", "--cwd", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "no pools found" in result.output
+
+
 def test_pool_init_errors_when_registry_not_found(tmp_path: Path) -> None:
     """alph pool init exits non-zero with a helpful message when registry ID is unknown."""
     result = runner.invoke(app, [

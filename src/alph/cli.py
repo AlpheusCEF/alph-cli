@@ -18,6 +18,7 @@ from rich.table import Table
 
 from alph.core import (
     AlphConfig,
+    PoolSummary,
     RegistryEntry,
     check_git_state,
     collect_registries,
@@ -1103,6 +1104,32 @@ def pool_list(
             for reg in known:
                 console.print(f"  {reg.registry_id}" + (f" ({reg.name})" if reg.name else ""))
         raise typer.Exit(code=1)
+
+    # For remote registries with no locally-configured pools, discover via the forge API.
+    if not summaries:
+        entry = cfg.registries.get(registry_id)
+        if entry and is_remote_registry(entry.pool_home):
+            ref = parse_remote_registry(entry.pool_home)
+            try:
+                provider = provider_for_url(entry.pool_home)
+                remote_names = fetch_remote_pools_cached(
+                    provider,
+                    ref.subpath,
+                    cache_key=entry.pool_home,
+                    ttl=cfg.completion_cache_ttl,
+                )
+                for pool_name in remote_names:
+                    summaries.append(
+                        PoolSummary(
+                            name=pool_name,
+                            context="",
+                            pool_type="subdir",
+                            path=Path(entry.pool_home) / pool_name,
+                            source="discovered",
+                        )
+                    )
+            except Exception:
+                pass
 
     if not summaries:
         console.print(f"no pools found in registry: {registry_id}")
