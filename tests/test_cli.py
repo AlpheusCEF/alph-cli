@@ -2054,3 +2054,58 @@ def test_effective_completion_remote_per_registry_false_overrides_global_true(tm
     )
     entry = cfg.registries["remote"]
     assert _effective_completion_remote(entry, cfg) is False
+
+
+# ---------------------------------------------------------------------------
+# alph completions
+# ---------------------------------------------------------------------------
+
+
+def test_completions_show_prints_zsh_script(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """completions show zsh outputs the zsh completion script to stdout."""
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["completions", "show", "zsh"])
+    assert result.exit_code == 0
+    assert "#compdef alph" in result.output
+
+
+def test_completions_show_prints_fish_script(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """completions show fish outputs the fish completion script to stdout."""
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["completions", "show", "fish"])
+    assert result.exit_code == 0
+    assert "--command alph" in result.output
+
+
+def test_completions_show_rejects_unknown_shell(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """completions show <unknown> exits non-zero with an error message."""
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["completions", "show", "tcsh"])
+    assert result.exit_code != 0
+    assert "tcsh" in result.output
+
+
+def test_completions_show_detects_shell_from_env(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """completions show without a SHELL arg falls back to $SHELL env var."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    result = runner.invoke(app, ["completions", "show"])
+    assert result.exit_code == 0
+    assert "#compdef alph" in result.output
+
+
+def test_completions_install_writes_file_and_prints_path(
+    tmp_path: Path, monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    """completions install zsh writes the script to the target file and prints its path."""
+    install_dir = tmp_path / "completions"
+    install_dir.mkdir()
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["completions", "install", "zsh",
+                                 "--install-dir", str(install_dir)])
+    assert result.exit_code == 0
+    installed = install_dir / "_alph"
+    assert installed.exists()
+    assert "#compdef alph" in installed.read_text()
+    assert "Completion script installed" in result.output
+    assert "_alph" in result.output

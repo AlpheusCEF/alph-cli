@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -48,14 +49,16 @@ from alph.remote import (
 )
 
 _help_settings = {"help_option_names": ["-h", "--help"]}
-app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.\n\nRun 'alph examples' for structured usage walkthroughs.", context_settings=_help_settings)
+app = typer.Typer(name="alph", help="Alpheus Context Engine Framework.\n\nRun 'alph examples' for structured usage walkthroughs.", context_settings=_help_settings, add_completion=False)
 registry_app = typer.Typer(help="Registry commands.", invoke_without_command=True, context_settings=_help_settings)
 pool_app = typer.Typer(help="Pool commands.", invoke_without_command=True, context_settings=_help_settings)
 config_app = typer.Typer(help="Config file commands.", invoke_without_command=True, context_settings=_help_settings)
+completions_app = typer.Typer(help="Shell tab completion commands.", context_settings=_help_settings)
 app.add_typer(registry_app, name="registry")
 app.add_typer(registry_app, name="reg", hidden=True)
 app.add_typer(pool_app, name="pool")
 app.add_typer(config_app, name="config")
+app.add_typer(completions_app, name="completions")
 
 def _console_width() -> int:
     try:
@@ -1673,3 +1676,126 @@ app.command("l", hidden=True)(cmd_list)
 app.command("a", hidden=True)(cmd_add)
 app.command("s", hidden=True)(cmd_show)
 app.command("v", hidden=True)(cmd_validate)
+
+
+# ---------------------------------------------------------------------------
+# completions commands
+# ---------------------------------------------------------------------------
+
+_SUPPORTED_SHELLS = {"zsh", "bash", "fish"}
+
+_COMPLETION_FILENAMES: dict[str, str] = {
+    "zsh": "_alph",
+    "bash": "alph",
+    "fish": "alph.fish",
+}
+
+_COMPLETION_DEFAULT_DIRS: dict[str, Path] = {
+    "zsh": Path.home() / ".zsh" / "completions",
+    "bash": Path.home() / ".bash_completion.d",
+    "fish": Path.home() / ".config" / "fish" / "completions",
+}
+
+
+def _generate_completion_script(shell: str) -> str:
+    """Generate the completion script for *shell* using the Typer env var mechanism."""
+    env = {**os.environ, "_ALPH_COMPLETE": f"source_{shell}"}
+    result = subprocess.run(
+        ["alph"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
+
+
+def _resolve_shell(shell: str | None) -> str:
+    """Return shell name: explicit arg > basename of $SHELL > error."""
+    if shell:
+        return shell.lower()
+    shell_env = os.environ.get("SHELL", "")
+    if shell_env:
+        return Path(shell_env).name.lower()
+    raise typer.BadParameter(
+        "Could not detect shell. Pass the shell name explicitly: zsh, bash, or fish."
+    )
+
+
+@completions_app.command("show")
+def completions_show(
+    shell: str = typer.Argument(
+        None,
+        help="Shell to generate completion for: zsh, bash, fish. "
+             "Defaults to the basename of $SHELL.",
+    ),
+) -> None:
+    """Print the shell completion script to stdout.
+
+    Pipe to a file or eval directly:
+
+      alph completions show zsh > ~/.zsh/completions/_alph
+
+      source <(alph completions show bash)
+    """
+    resolved = _resolve_shell(shell)
+    if resolved not in _SUPPORTED_SHELLS:
+        console.print(f"[red]error:[/red] '{resolved}' is not supported. "
+                      f"Supported shells: {', '.join(sorted(_SUPPORTED_SHELLS))}")
+        raise typer.Exit(1)
+    typer.echo(_generate_completion_script(resolved), nl=False)
+
+
+@completions_app.command("install")
+def completions_install(
+    shell: str = typer.Argument(
+        None,
+        help="Shell to install completion for: zsh, bash, fish. "
+             "Defaults to the basename of $SHELL.",
+    ),
+    install_dir: Path = typer.Option(
+        None,
+        "--install-dir",
+        help="Directory to write the completion file into. "
+             "Defaults to the standard location for the shell.",
+    ),
+) -> None:
+    """Install shell completion script to the standard location.
+
+    After installing, reload your shell or run the appropriate source command:
+
+      # zsh — add to ~/.zshrc if not already present:
+      #   fpath=(~/.zsh/completions $fpath)
+      #   autoload -Uz compinit && compinit
+
+      # bash — add to ~/.bashrc if not already present:
+      #   source ~/.bash_completion.d/alph
+
+      # fish — completions are loaded automatically from ~/.config/fish/completions/
+    """
+    resolved = _resolve_shell(shell)
+    if resolved not in _SUPPORTED_SHELLS:
+        console.print(f"[red]error:[/red] '{resolved}' is not supported. "
+                      f"Supported shells: {', '.join(sorted(_SUPPORTED_SHELLS))}")
+        raise typer.Exit(1)
+
+    target_dir = install_dir or _COMPLETION_DEFAULT_DIRS[resolved]
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / _COMPLETION_FILENAMES[resolved]
+
+    script = _generate_completion_script(resolved)
+    target_file.write_text(script)
+    console.print(f"Completion script installed: {target_file}")
+
+    if resolved == "zsh":
+        console.print(
+            "\n[dim]Add to ~/.zshrc if not already present:[/dim]\n"
+            "  fpath=(~/.zsh/completions $fpath)\n"
+            "  autoload -Uz compinit && compinit"
+        )
+    elif resolved == "bash":
+        console.print(
+            f"\n[dim]Add to ~/.bashrc if not already present:[/dim]\n"
+            f"  source {target_file}"
+        )
+    elif resolved == "fish":
+        console.print("\n[dim]Fish loads completions automatically from this directory.[/dim]")

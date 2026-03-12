@@ -1,5 +1,5 @@
 .\" Man page for alph(1) — Alpheus Context Engine Framework CLI
-.TH ALPH 1 "2026-03-12" "alph 0.1.29" "Alpheus Context Engine Framework"
+.TH ALPH 1 "2026-03-12" "alph 0.1.30" "Alpheus Context Engine Framework"
 .SH NAME
 alph \- git-backed context management for LLMs
 .SH SYNOPSIS
@@ -396,8 +396,15 @@ supports shell tab completion for registry IDs and pool names.
 Install completion once for your shell:
 .RS
 .nf
-alph --install-completion zsh    # or bash, fish
-exec zsh                          # reload shell to activate
+alph completions install zsh      # or bash, fish
+exec zsh                           # reload shell to activate
+.fi
+.RE
+.PP
+To print the script without installing (e.g., to pipe elsewhere):
+.RS
+.nf
+alph completions show zsh
 .fi
 .RE
 .PP
