@@ -1974,7 +1974,10 @@ def test_complete_pool_uses_remote_api_for_ro_when_completion_remote_enabled(
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     monkeypatch.chdir(tmp_path)
 
-    with patch("alph.cli.fetch_remote_pools_cached", return_value=["sensors", "actuators"]):
+    from unittest.mock import MagicMock
+    mock_provider = MagicMock()
+    with patch("alph.cli.provider_for_url", return_value=mock_provider), \
+         patch("alph.cli.fetch_remote_pools_cached", return_value=["sensors", "actuators"]):
         completions = _complete_pool("")
 
     assert "sensors" in completions
