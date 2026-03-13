@@ -383,7 +383,7 @@ def test_list_output_csv(tmp_path: Path) -> None:
     result = runner.invoke(app, ["list", "--pool", str(pool), "-o", "csv"])
     assert result.exit_code == 0
     lines = result.output.strip().splitlines()
-    assert lines[0] == "id,type,status,context,timestamp"
+    assert lines[0] == "id,type,content_type,status,context,timestamp"
     assert "CSV node" in lines[1]
 
 
@@ -396,6 +396,233 @@ def test_add_with_status_writes_status_to_frontmatter(tmp_path: Path) -> None:
     frontmatter = extract_frontmatter(node_file.read_text())
     assert frontmatter is not None
     assert frontmatter["status"] == "archived"
+
+
+# ---------------------------------------------------------------------------
+# --tags and --meta flags on add
+# ---------------------------------------------------------------------------
+
+
+def test_add_with_tags_writes_tags_to_frontmatter(tmp_path: Path) -> None:
+    """alph add --tags urgent --tags review writes tags list to frontmatter."""
+    pool = _init_registry_and_pool(tmp_path)
+    result = runner.invoke(app, [
+        "add", "-c", "Tagged node",
+        "--pool", str(pool), "--creator", "chase@example.com",
+        "--tags", "urgent", "--tags", "review",
+    ])
+    assert result.exit_code == 0
+    node_file = next((pool / "snapshots").glob("*.md"))
+    frontmatter = extract_frontmatter(node_file.read_text())
+    assert frontmatter is not None
+    assert set(frontmatter["tags"]) == {"urgent", "review"}
+
+
+def test_add_with_meta_writes_meta_to_frontmatter(tmp_path: Path) -> None:
+    """alph add --meta priority=high --meta due=2026-04-01 writes meta dict."""
+    pool = _init_registry_and_pool(tmp_path)
+    result = runner.invoke(app, [
+        "add", "-c", "Meta node",
+        "--pool", str(pool), "--creator", "chase@example.com",
+        "--meta", "priority=high", "--meta", "due=2026-04-01",
+    ])
+    assert result.exit_code == 0
+    node_file = next((pool / "snapshots").glob("*.md"))
+    frontmatter = extract_frontmatter(node_file.read_text())
+    assert frontmatter is not None
+    assert frontmatter["meta"]["priority"] == "high"
+    assert frontmatter["meta"]["due"] == "2026-04-01"
+
+
+def test_add_with_malformed_meta_errors(tmp_path: Path) -> None:
+    """alph add --meta without = sign reports an error."""
+    pool = _init_registry_and_pool(tmp_path)
+    result = runner.invoke(app, [
+        "add", "-c", "Bad meta",
+        "--pool", str(pool), "--creator", "chase@example.com",
+        "--meta", "no-equals-sign",
+    ])
+    assert result.exit_code != 0
+    assert "key=value" in result.output
+
+
+def test_add_with_related_to_writes_related_to(tmp_path: Path) -> None:
+    """alph add --related-to abc123 writes related_to list."""
+    pool = _init_registry_and_pool(tmp_path)
+    result = runner.invoke(app, [
+        "add", "-c", "Related node",
+        "--pool", str(pool), "--creator", "chase@example.com",
+        "--related-to", "abc123def456",
+    ])
+    assert result.exit_code == 0
+    node_file = next((pool / "snapshots").glob("*.md"))
+    frontmatter = extract_frontmatter(node_file.read_text())
+    assert frontmatter is not None
+    assert "abc123def456" in frontmatter["related_to"]
+
+
+def test_add_task_with_tags_and_meta(tmp_path: Path) -> None:
+    """alph add --ct task --tags urgent --meta priority=high creates a valid task node."""
+    pool = _init_registry_and_pool(tmp_path)
+    result = runner.invoke(app, [
+        "add", "-c", "Fix login bug",
+        "--pool", str(pool), "--creator", "chase@example.com",
+        "--ct", "task", "--tags", "urgent", "--meta", "priority=high",
+    ])
+    assert result.exit_code == 0
+    node_file = next((pool / "snapshots").glob("*.md"))
+    frontmatter = extract_frontmatter(node_file.read_text())
+    assert frontmatter is not None
+    assert frontmatter["content_type"] == "task"
+    assert "urgent" in frontmatter["tags"]
+    assert frontmatter["meta"]["priority"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# Config defaults wired into CLI
+# ---------------------------------------------------------------------------
+# update command
+# ---------------------------------------------------------------------------
+
+
+def test_update_changes_status(tmp_path: Path) -> None:
+    """alph update <id> --status archived changes node status."""
+    pool = _init_registry_and_pool(tmp_path)
+    add_result = runner.invoke(app, [
+        "add", "-c", "Node to update",
+        "--pool", str(pool), "--creator", "chase@example.com",
+    ])
+    assert add_result.exit_code == 0
+    node_file = next((pool / "snapshots").glob("*.md"))
+    fm = extract_frontmatter(node_file.read_text())
+    assert fm is not None
+    node_id = fm["id"]
+    result = runner.invoke(app, [
+        "update", node_id, "--status", "archived", "--pool", str(pool),
+    ])
+    assert result.exit_code == 0
+    assert "updated" in result.output
+    fm2 = extract_frontmatter(node_file.read_text())
+    assert fm2 is not None
+    assert fm2["status"] == "archived"
+
+
+def test_update_tags_add(tmp_path: Path) -> None:
+    """alph update <id> --tags-add urgent adds a tag."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, [
+        "add", "-c", "Tagged for update",
+        "--pool", str(pool), "--creator", "chase@example.com",
+        "--tags", "initial",
+    ])
+    node_file = next((pool / "snapshots").glob("*.md"))
+    fm = extract_frontmatter(node_file.read_text())
+    node_id = fm["id"]
+    result = runner.invoke(app, [
+        "update", node_id, "--tags-add", "urgent", "--pool", str(pool),
+    ])
+    assert result.exit_code == 0
+    fm2 = extract_frontmatter(node_file.read_text())
+    assert fm2 is not None
+    assert set(fm2["tags"]) == {"initial", "urgent"}
+
+
+def test_update_meta(tmp_path: Path) -> None:
+    """alph update <id> --meta priority=high merges meta."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, [
+        "add", "-c", "Meta update test",
+        "--pool", str(pool), "--creator", "chase@example.com",
+    ])
+    node_file = next((pool / "snapshots").glob("*.md"))
+    fm = extract_frontmatter(node_file.read_text())
+    node_id = fm["id"]
+    result = runner.invoke(app, [
+        "update", node_id, "--meta", "priority=high", "--pool", str(pool),
+    ])
+    assert result.exit_code == 0
+    fm2 = extract_frontmatter(node_file.read_text())
+    assert fm2 is not None
+    assert fm2["meta"]["priority"] == "high"
+
+
+def test_update_not_found(tmp_path: Path) -> None:
+    """alph update with unknown node ID reports error."""
+    pool = _init_registry_and_pool(tmp_path)
+    result = runner.invoke(app, [
+        "update", "nonexistent1", "--status", "archived", "--pool", str(pool),
+    ])
+    assert result.exit_code != 0
+    assert "not found" in result.output
+
+
+def test_show_displays_meta_fields(tmp_path: Path) -> None:
+    """alph show renders meta key-value pairs when present."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, [
+        "add", "-c", "Write report", "--ct", "task",
+        "--meta", "priority=high", "--meta", "due=2026-04-01",
+        "--pool", str(pool), "--creator", "chase@example.com",
+    ])
+    node_id = next((pool / "snapshots").glob("*.md")).stem
+    result = runner.invoke(app, ["show", node_id, "--pool", str(pool)])
+    assert result.exit_code == 0
+    assert "priority" in result.output
+    assert "high" in result.output
+    assert "due" in result.output
+    assert "2026-04-01" in result.output
+
+
+def test_show_displays_meta_for_gdoc_content_type(tmp_path: Path) -> None:
+    """alph show renders meta fields for typed content like gdoc."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, [
+        "add", "-c", "Design doc", "--ct", "gdoc",
+        "--meta", "url=https://docs.google.com/doc/d/abc",
+        "--meta", "title=Auth Review",
+        "--pool", str(pool), "--creator", "chase@example.com",
+    ])
+    node_id = next((pool / "snapshots").glob("*.md")).stem
+    result = runner.invoke(app, ["show", node_id, "--pool", str(pool)])
+    assert result.exit_code == 0
+    assert "url" in result.output
+    assert "docs.google.com" in result.output
+    assert "title" in result.output
+    assert "Auth Review" in result.output
+
+
+def test_show_marks_required_meta_with_star(tmp_path: Path) -> None:
+    """alph show marks required meta fields with * for typed content."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, [
+        "add", "-c", "Design doc", "--ct", "gdoc",
+        "--meta", "url=https://docs.google.com/doc/d/abc",
+        "--meta", "title=Auth Review",
+        "--pool", str(pool), "--creator", "chase@example.com",
+    ])
+    node_id = next((pool / "snapshots").glob("*.md")).stem
+    result = runner.invoke(app, ["show", node_id, "--pool", str(pool)])
+    assert result.exit_code == 0
+    # url is required for gdoc — should have * marker
+    assert "meta.url*:" in result.output
+    # title is optional — no * marker
+    assert "meta.title:" in result.output
+    assert "meta.title*:" not in result.output
+
+
+def test_show_no_star_for_text_content_type(tmp_path: Path) -> None:
+    """alph show does not mark meta fields with * for text content_type (no required meta)."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, [
+        "add", "-c", "Plain note",
+        "--meta", "priority=high",
+        "--pool", str(pool), "--creator", "chase@example.com",
+    ])
+    node_id = next((pool / "snapshots").glob("*.md")).stem
+    result = runner.invoke(app, ["show", node_id, "--pool", str(pool)])
+    assert result.exit_code == 0
+    assert "meta.priority:" in result.output
+    assert "*:" not in result.output
 
 
 # ---------------------------------------------------------------------------

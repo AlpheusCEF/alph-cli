@@ -31,6 +31,7 @@ from alph.core import (
     resolve_default_pool,
     resolve_pool_name,
     show_node,
+    update_node,
     update_state,
     validate_node,
 )
@@ -2713,3 +2714,202 @@ def test_show_node_defaults_content_type_to_text(tmp_path: Path) -> None:
     detail = show_node(pool, result.node_id)
     assert detail is not None
     assert detail.content_type == "text"
+
+
+# ---------------------------------------------------------------------------
+# task content_type
+# ---------------------------------------------------------------------------
+
+
+def test_task_content_type_is_valid() -> None:
+    """task is a valid content_type."""
+    assert "task" in _VALID_CONTENT_TYPES
+
+
+def test_node_with_task_content_type_passes_validation() -> None:
+    """A node with content_type: task passes validation with no required meta."""
+    result = validate_node(_base_node(content_type="task"))
+    assert result.valid is True
+
+
+def test_task_node_with_optional_meta_passes_validation() -> None:
+    """A task node with optional meta fields (priority, due) passes validation."""
+    node = _base_node(content_type="task", meta={"priority": "high", "due": "2026-04-01"})
+    result = validate_node(node)
+    assert result.valid is True
+
+
+def test_create_node_writes_task_content_type(tmp_path: Path) -> None:
+    """create_node writes content_type: task to frontmatter."""
+    pool = _make_pool(tmp_path)
+    result = create_node(
+        pool_path=pool,
+        source="cli",
+        node_type="snapshot",
+        context="Fix login bug",
+        creator="chase@example.com",
+        content_type="task",
+        meta={"priority": "high"},
+    )
+    frontmatter = extract_frontmatter(result.path.read_text())
+    assert frontmatter is not None
+    assert frontmatter["content_type"] == "task"
+    assert frontmatter["meta"]["priority"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# update_node
+# ---------------------------------------------------------------------------
+
+
+def _create_test_node(pool: Path, **kwargs: object) -> str:
+    """Create a test node and return its ID."""
+    defaults: dict[str, object] = {
+        "pool_path": pool,
+        "source": "cli",
+        "node_type": "snapshot",
+        "context": "Test node",
+        "creator": "chase@example.com",
+    }
+    defaults.update(kwargs)
+    result = create_node(**defaults)  # type: ignore[arg-type]
+    return result.node_id
+
+
+def test_update_node_changes_status(tmp_path: Path) -> None:
+    """update_node changes a node's status from active to archived."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool)
+    result = update_node(pool_path=pool, node_id=node_id, status="archived")
+    assert result.node_id == node_id
+    detail = show_node(pool, node_id)
+    assert detail is not None
+    assert detail.node_type == "snapshot"
+    fm = extract_frontmatter(result.path.read_text())
+    assert fm is not None
+    assert fm["status"] == "archived"
+
+
+def test_update_node_tags_add_merges_without_duplicates(tmp_path: Path) -> None:
+    """update_node tags_add merges new tags without duplicating existing ones."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, tags=["existing"])
+    update_node(pool_path=pool, node_id=node_id, tags_add=["new", "existing"])
+    detail = show_node(pool, node_id)
+    assert detail is not None
+    assert set(detail.tags) == {"existing", "new"}
+
+
+def test_update_node_tags_remove(tmp_path: Path) -> None:
+    """update_node tags_remove removes specified tags."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, tags=["keep", "remove-me"])
+    update_node(pool_path=pool, node_id=node_id, tags_remove=["remove-me"])
+    detail = show_node(pool, node_id)
+    assert detail is not None
+    assert detail.tags == ["keep"]
+
+
+def test_update_node_tags_full_replacement(tmp_path: Path) -> None:
+    """update_node tags replaces the entire tags list."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, tags=["old"])
+    update_node(pool_path=pool, node_id=node_id, tags=["new1", "new2"])
+    detail = show_node(pool, node_id)
+    assert detail is not None
+    assert set(detail.tags) == {"new1", "new2"}
+
+
+def test_update_node_tags_and_tags_add_mutually_exclusive(tmp_path: Path) -> None:
+    """update_node errors when both tags and tags_add are provided."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool)
+    result = update_node(pool_path=pool, node_id=node_id, tags=["a"], tags_add=["b"])
+    assert not result.valid
+    assert any("mutually exclusive" in e for e in result.errors)
+
+
+def test_update_node_meta_merges(tmp_path: Path) -> None:
+    """update_node meta merges into existing meta dict."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, meta={"existing_key": "val"})
+    update_node(pool_path=pool, node_id=node_id, meta={"new_key": "new_val"})
+    detail = show_node(pool, node_id)
+    assert detail is not None
+    assert detail.meta["existing_key"] == "val"
+    assert detail.meta["new_key"] == "new_val"
+
+
+def test_update_node_content_replaces_body(tmp_path: Path) -> None:
+    """update_node content replaces the body text."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, content="Original body")
+    update_node(pool_path=pool, node_id=node_id, content="New body text")
+    detail = show_node(pool, node_id)
+    assert detail is not None
+    assert detail.body == "New body text"
+
+
+def test_update_node_context_replaces_frontmatter_field(tmp_path: Path) -> None:
+    """update_node context replaces the context frontmatter field."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, context="Original context")
+    update_node(pool_path=pool, node_id=node_id, context="Updated context")
+    detail = show_node(pool, node_id)
+    assert detail is not None
+    assert detail.context == "Updated context"
+
+
+def test_update_node_noop_when_values_unchanged(tmp_path: Path) -> None:
+    """update_node returns no-op when the update produces identical content."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, status="active")
+    result = update_node(pool_path=pool, node_id=node_id, status="active")
+    assert result.noop is True
+
+
+def test_update_node_not_found(tmp_path: Path) -> None:
+    """update_node errors when the node ID does not exist."""
+    pool = _make_pool(tmp_path)
+    result = update_node(pool_path=pool, node_id="nonexistent1")
+    assert not result.valid
+    assert any("not found" in e for e in result.errors)
+
+
+def test_update_node_invalid_status(tmp_path: Path) -> None:
+    """update_node errors when given an invalid status value."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool)
+    result = update_node(pool_path=pool, node_id=node_id, status="invalid")
+    assert not result.valid
+    assert any("status" in e for e in result.errors)
+
+
+def test_update_node_content_type(tmp_path: Path) -> None:
+    """update_node can change the content_type field."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool)
+    update_node(pool_path=pool, node_id=node_id, content_type="task")
+    detail = show_node(pool, node_id)
+    assert detail is not None
+    assert detail.content_type == "task"
+
+
+def test_update_node_related_add(tmp_path: Path) -> None:
+    """update_node related_add appends to existing related_to list."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, related_to=["aaa111bbb222"])
+    update_node(pool_path=pool, node_id=node_id, related_add=["ccc333ddd444"])
+    detail = show_node(pool, node_id)
+    assert detail is not None
+    assert set(detail.related_to) == {"aaa111bbb222", "ccc333ddd444"}
+
+
+def test_update_node_related_to_full_replacement(tmp_path: Path) -> None:
+    """update_node related_to replaces the entire related_to list."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, related_to=["old1"])
+    update_node(pool_path=pool, node_id=node_id, related_to=["new1", "new2"])
+    detail = show_node(pool, node_id)
+    assert detail is not None
+    assert set(detail.related_to) == {"new1", "new2"}

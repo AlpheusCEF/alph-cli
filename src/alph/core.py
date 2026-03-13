@@ -129,6 +129,17 @@ class NodeResult:
 
 
 @dataclass(frozen=True)
+class UpdateResult:
+    """Result of an update_node call."""
+
+    node_id: str
+    path: Path
+    valid: bool = True
+    errors: list[str] = field(default_factory=list)
+    noop: bool = False
+
+
+@dataclass(frozen=True)
 class TimelineState:
     """Persistent state tracking for a pool."""
 
@@ -337,7 +348,7 @@ _VALID_SCHEMA_VERSIONS = {"1"}
 _VALID_STATUSES = {"active", "archived", "suppressed"}
 _DEFAULT_STATUS = "active"
 
-_VALID_CONTENT_TYPES = {"text", "gdoc", "slack", "jira", "confluence", "email", "image", "figma"}
+_VALID_CONTENT_TYPES = {"text", "gdoc", "slack", "jira", "confluence", "email", "image", "figma", "task"}
 
 # Required meta fields per content_type. Keys not listed here (e.g. "text") have no requirements.
 _CONTENT_TYPE_REQUIRED_META: dict[str, list[str]] = {
@@ -436,7 +447,7 @@ def validate_node(frontmatter: dict[str, object]) -> ValidationResult:
                         errors.append(
                             "content_type 'slack' requires meta.url OR (meta.channel + meta.thread_ts)"
                         )
-                elif ct in _CONTENT_TYPE_REQUIRED_META:
+                elif isinstance(ct, str) and ct in _CONTENT_TYPE_REQUIRED_META:
                     for field in _CONTENT_TYPE_REQUIRED_META[ct]:
                         if field not in meta:
                             errors.append(
@@ -1300,10 +1311,31 @@ def init_pool(
 # ---------------------------------------------------------------------------
 
 
+def _find_node_file(pool_path: Path, node_id: str) -> Path | None:
+    """Find the file for a node by ID, scanning snapshots/ and live/.
+
+    Args:
+        pool_path: Root directory of the pool.
+        node_id: 12-character node ID to search for.
+
+    Returns:
+        Path to the node file, or None if not found.
+    """
+    for subdir in ("snapshots", "live"):
+        directory = pool_path / subdir
+        if not directory.exists():
+            continue
+        for node_file in directory.glob("*.md"):
+            frontmatter = extract_frontmatter(node_file.read_text())
+            if frontmatter and frontmatter.get("id") == node_id:
+                return node_file
+    return None
+
+
 def check_idempotency(pool_path: Path, node_id: str) -> ExistingNode | None:
     """Check whether a node with the given ID already exists in a pool.
 
-    Scans both ``snapshots/`` and ``pointers/`` subdirectories for a file
+    Scans both ``snapshots/`` and ``live/`` subdirectories for a file
     whose frontmatter ``id`` matches *node_id*.
 
     Args:
@@ -1313,18 +1345,16 @@ def check_idempotency(pool_path: Path, node_id: str) -> ExistingNode | None:
     Returns:
         ExistingNode with creator and timestamp if found, None otherwise.
     """
-    for subdir in ("snapshots", "live"):
-        directory = pool_path / subdir
-        if not directory.exists():
-            continue
-        for node_file in directory.glob("*.md"):
-            frontmatter = extract_frontmatter(node_file.read_text())
-            if frontmatter and frontmatter.get("id") == node_id:
-                return ExistingNode(
-                    creator=str(frontmatter["creator"]),
-                    timestamp=str(frontmatter["timestamp"]),
-                )
-    return None
+    node_file = _find_node_file(pool_path, node_id)
+    if node_file is None:
+        return None
+    frontmatter = extract_frontmatter(node_file.read_text())
+    if frontmatter is None:
+        return None
+    return ExistingNode(
+        creator=str(frontmatter["creator"]),
+        timestamp=str(frontmatter["timestamp"]),
+    )
 
 
 def create_node(
@@ -1358,7 +1388,7 @@ def create_node(
         timestamp: ISO-8601 timestamp; defaults to now (UTC).
         content: Optional Markdown body below the frontmatter.
         content_type: Optional content format (text, gdoc, slack, jira, confluence,
-            email, image, figma). Defaults to omitted (implicitly "text").
+            email, image, figma, task). Defaults to omitted (implicitly "text").
         tags: Optional semantic labels.
         related_to: Optional list of cross-reference strings.
         meta: Optional source-specific key-value pairs.
@@ -1437,6 +1467,163 @@ def create_node(
     return NodeResult(node_id=node_id, path=path)
 
 
+def update_node(
+    *,
+    pool_path: Path,
+    node_id: str,
+    status: str | None = None,
+    tags: list[str] | None = None,
+    tags_add: list[str] | None = None,
+    tags_remove: list[str] | None = None,
+    meta: dict[str, object] | None = None,
+    content: str | None = None,
+    context: str | None = None,
+    related_to: list[str] | None = None,
+    related_add: list[str] | None = None,
+    content_type: str | None = None,
+    auto_commit: bool = False,
+) -> UpdateResult:
+    """Update an existing node's frontmatter and/or body.
+
+    Args:
+        pool_path: Root directory of the pool.
+        node_id: 12-character node ID to update.
+        status: New status value (active, archived, suppressed).
+        tags: Full replacement of the tags list.
+        tags_add: Tags to merge into existing (mutually exclusive with tags).
+        tags_remove: Tags to remove from existing.
+        meta: Key-value pairs to merge into existing meta dict.
+        content: New body text (replaces entire body).
+        context: New context frontmatter field value.
+        related_to: Full replacement of the related_to list.
+        related_add: Related IDs to append (mutually exclusive with related_to).
+        content_type: New content_type value.
+        auto_commit: Git commit after writing.
+
+    Returns:
+        UpdateResult with node_id and path, or errors if invalid.
+    """
+    _sentinel = Path()
+
+    # Mutual exclusion checks
+    if tags is not None and tags_add is not None:
+        return UpdateResult(
+            node_id=node_id, path=_sentinel, valid=False,
+            errors=["tags and tags_add are mutually exclusive"],
+        )
+    if related_to is not None and related_add is not None:
+        return UpdateResult(
+            node_id=node_id, path=_sentinel, valid=False,
+            errors=["related_to and related_add are mutually exclusive"],
+        )
+
+    # Find the node file
+    node_file = _find_node_file(pool_path, node_id)
+    if node_file is None:
+        return UpdateResult(
+            node_id=node_id, path=_sentinel, valid=False,
+            errors=[f"node '{node_id}' not found in pool"],
+        )
+
+    # Parse existing content
+    original_text = node_file.read_text()
+    frontmatter = extract_frontmatter(original_text)
+    if frontmatter is None:
+        return UpdateResult(
+            node_id=node_id, path=node_file, valid=False,
+            errors=["node file has no valid frontmatter"],
+        )
+
+    parts = original_text.split("---", 2)
+    original_body = parts[2].strip() if len(parts) == 3 else ""
+
+    # Apply updates to frontmatter
+    if status is not None:
+        frontmatter["status"] = status
+    if context is not None:
+        frontmatter["context"] = context
+    if content_type is not None:
+        frontmatter["content_type"] = content_type
+
+    # Tags
+    if tags is not None:
+        frontmatter["tags"] = tags
+    elif tags_add is not None or tags_remove is not None:
+        raw_tags = frontmatter.get("tags") or []
+        existing_tags: list[object] = list(raw_tags) if isinstance(raw_tags, list) else []
+        if tags_add:
+            existing_set = set(str(t) for t in existing_tags)
+            for t in tags_add:
+                if t not in existing_set:
+                    existing_tags.append(t)
+                    existing_set.add(t)
+        if tags_remove:
+            remove_set = set(tags_remove)
+            existing_tags = [t for t in existing_tags if str(t) not in remove_set]
+        frontmatter["tags"] = existing_tags
+
+    # Meta (merge)
+    if meta is not None:
+        raw_meta = frontmatter.get("meta") or {}
+        existing_meta: dict[str, object] = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+        existing_meta.update(meta)
+        frontmatter["meta"] = existing_meta
+
+    # Related
+    if related_to is not None:
+        frontmatter["related_to"] = related_to
+    elif related_add is not None:
+        raw_related = frontmatter.get("related_to") or []
+        existing_related: list[object] = list(raw_related) if isinstance(raw_related, list) else []
+        existing_set = set(str(r) for r in existing_related)
+        for r in related_add:
+            if r not in existing_set:
+                existing_related.append(r)
+                existing_set.add(r)
+        frontmatter["related_to"] = existing_related
+
+    # Body
+    new_body = content if content is not None else original_body
+
+    # Validate modified frontmatter
+    validation = validate_node(frontmatter)
+    if not validation.valid:
+        return UpdateResult(
+            node_id=node_id, path=node_file, valid=False,
+            errors=validation.errors,
+        )
+
+    # Build new file text
+    frontmatter_text = yaml.dump(
+        dict(frontmatter), default_flow_style=False, allow_unicode=True,
+    )
+    new_text = f"---\n{frontmatter_text}---\n"
+    if new_body:
+        new_text += f"\n{new_body}\n"
+
+    # No-op check
+    if new_text == original_text:
+        return UpdateResult(node_id=node_id, path=node_file, noop=True)
+
+    node_file.write_text(new_text)
+
+    if auto_commit:
+        try:
+            subprocess.run(
+                ["git", "-C", str(pool_path), "add", str(node_file)],
+                check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(pool_path), "commit", "-m",
+                 f"alph: update node {node_id}"],
+                check=True, capture_output=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+
+    return UpdateResult(node_id=node_id, path=node_file)
+
+
 # ---------------------------------------------------------------------------
 # Query
 # ---------------------------------------------------------------------------
@@ -1498,35 +1685,32 @@ def show_node(pool_path: Path, node_id: str) -> NodeDetail | None:
     Returns:
         NodeDetail with all frontmatter fields and body, or None if not found.
     """
-    for subdir in ("snapshots", "live"):
-        directory = pool_path / subdir
-        if not directory.exists():
-            continue
-        for node_file in directory.glob("*.md"):
-            text = node_file.read_text()
-            frontmatter = extract_frontmatter(text)
-            if not frontmatter or frontmatter.get("id") != node_id:
-                continue
-            # Body is the text after the closing --- delimiter
-            parts = text.split("---", 2)
-            body = parts[2].strip() if len(parts) == 3 else ""
-            tags = frontmatter.get("tags", [])
-            related_to = frontmatter.get("related_to", [])
-            meta = frontmatter.get("meta", {})
-            return NodeDetail(
-                node_id=node_id,
-                context=str(frontmatter.get("context", "")),
-                node_type=str(frontmatter.get("node_type", "")),
-                timestamp=str(frontmatter.get("timestamp", "")),
-                source=str(frontmatter.get("source", "")),
-                creator=str(frontmatter.get("creator", "")),
-                body=body,
-                tags=[str(t) for t in tags] if isinstance(tags, list) else [],
-                related_to=[str(r) for r in related_to] if isinstance(related_to, list) else [],
-                meta=dict(meta) if isinstance(meta, dict) else {},
-                content_type=str(frontmatter.get("content_type", "text")),
-            )
-    return None
+    node_file = _find_node_file(pool_path, node_id)
+    if node_file is None:
+        return None
+    text = node_file.read_text()
+    frontmatter = extract_frontmatter(text)
+    if frontmatter is None:
+        return None
+    # Body is the text after the closing --- delimiter
+    parts = text.split("---", 2)
+    body = parts[2].strip() if len(parts) == 3 else ""
+    tags = frontmatter.get("tags", [])
+    related_to = frontmatter.get("related_to", [])
+    meta = frontmatter.get("meta", {})
+    return NodeDetail(
+        node_id=node_id,
+        context=str(frontmatter.get("context", "")),
+        node_type=str(frontmatter.get("node_type", "")),
+        timestamp=str(frontmatter.get("timestamp", "")),
+        source=str(frontmatter.get("source", "")),
+        creator=str(frontmatter.get("creator", "")),
+        body=body,
+        tags=[str(t) for t in tags] if isinstance(tags, list) else [],
+        related_to=[str(r) for r in related_to] if isinstance(related_to, list) else [],
+        meta=dict(meta) if isinstance(meta, dict) else {},
+        content_type=str(frontmatter.get("content_type", "text")),
+    )
 
 
 # ---------------------------------------------------------------------------

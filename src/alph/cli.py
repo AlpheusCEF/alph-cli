@@ -17,10 +17,11 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from alph.core import (
+    _CONTENT_TYPE_REQUIRED_META,
+    _VALID_CONTENT_TYPES,
     AlphConfig,
     PoolSummary,
     RegistryEntry,
-    _VALID_CONTENT_TYPES,
     check_git_state,
     collect_registries,
     create_node,
@@ -37,6 +38,7 @@ from alph.core import (
     resolve_default_pool,
     resolve_pool_name,
     show_node,
+    update_node,
     validate_config_keys,
     validate_node,
 )
@@ -1163,6 +1165,9 @@ def cmd_add(
     content: str = typer.Option("", "--content", help="Optional Markdown body."),
     content_type: str | None = typer.Option(None, "--content-type", "--ct", help=f"Content format: {', '.join(sorted(_VALID_CONTENT_TYPES))}. Defaults to text."),
     status: str | None = typer.Option(None, "--status", help="active (default), archived (done — keep for history), or suppressed (temporarily hidden — still relevant)."),
+    tags: list[str] = typer.Option([], "--tags", help="Semantic tag labels (repeatable)."),
+    meta: list[str] = typer.Option([], "--meta", help="Key=value metadata (repeatable). E.g. --meta priority=high."),
+    related_to: list[str] = typer.Option([], "--related-to", help="Related node IDs (repeatable)."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Create a context node in a pool."""
@@ -1173,6 +1178,18 @@ def cmd_add(
             f"Valid values: {', '.join(sorted(_VALID_CONTENT_TYPES))}"
         )
         raise typer.Exit(code=1)
+
+    # Parse --meta key=value pairs into a dict.
+    parsed_meta: dict[str, object] = {}
+    for item in meta:
+        if "=" not in item:
+            console.print(
+                f"[red]Error:[/red] --meta value '{item}' must be in key=value format."
+            )
+            raise typer.Exit(code=1)
+        key, value = item.split("=", 1)
+        parsed_meta[key] = value
+
     cfg = _load_cli_config()
     pool_str = _require_pool(pool, cfg)
     resolved_creator = _require_creator(creator, cfg)
@@ -1186,6 +1203,9 @@ def cmd_add(
             content=content,
             content_type=content_type,
             status=status,
+            tags=tags or None,
+            meta=parsed_meta or None,
+            related_to=related_to or None,
             auto_commit=cfg.auto_commit,
         )
     if result.duplicate:
@@ -1195,6 +1215,68 @@ def cmd_add(
         )
         raise typer.Exit(code=0)
     console.print(f"[green]node created:[/green] {result.node_id}")
+    console.print(f"  path: {result.path}")
+    _auto_push_if_configured(pool_str, cfg)
+
+
+@app.command("update")
+def cmd_update(
+    node_id: str = typer.Argument(..., help="12-character node ID to update."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name.", autocompletion=_complete_pool),
+    status: str | None = typer.Option(None, "--status", help="New status: active, archived, suppressed."),
+    tags_add: list[str] = typer.Option([], "--tags-add", help="Tags to add (repeatable)."),
+    tags_remove: list[str] = typer.Option([], "--tags-remove", help="Tags to remove (repeatable)."),
+    meta: list[str] = typer.Option([], "--meta", help="Key=value metadata to merge (repeatable)."),
+    content: str | None = typer.Option(None, "--content", help="New body text (replaces entire body)."),
+    context: str | None = typer.Option(None, "-c", "--context", help="New context description."),
+    content_type: str | None = typer.Option(None, "--content-type", "--ct", help="New content type."),
+    related_add: list[str] = typer.Option([], "--related-add", help="Related node IDs to add (repeatable)."),
+    verbose: bool = _VERBOSE_OPT,
+) -> None:
+    """Update an existing node's frontmatter or body."""
+    _apply_verbose(verbose)
+    if content_type is not None and content_type not in _VALID_CONTENT_TYPES:
+        console.print(
+            f"[red]Error:[/red] unknown content_type '{content_type}'. "
+            f"Valid values: {', '.join(sorted(_VALID_CONTENT_TYPES))}"
+        )
+        raise typer.Exit(code=1)
+
+    # Parse --meta key=value pairs.
+    parsed_meta: dict[str, object] = {}
+    for item in meta:
+        if "=" not in item:
+            console.print(
+                f"[red]Error:[/red] --meta value '{item}' must be in key=value format."
+            )
+            raise typer.Exit(code=1)
+        key, value = item.split("=", 1)
+        parsed_meta[key] = value
+
+    cfg = _load_cli_config()
+    pool_str = _require_pool(pool, cfg)
+    with _pool_context(pool_str, cfg, writable=True) as resolved_pool:
+        result = update_node(
+            pool_path=resolved_pool,
+            node_id=node_id,
+            status=status,
+            tags_add=tags_add or None,
+            tags_remove=tags_remove or None,
+            meta=parsed_meta or None,
+            content=content,
+            context=context,
+            content_type=content_type,
+            related_add=related_add or None,
+            auto_commit=cfg.auto_commit,
+        )
+    if not result.valid:
+        for err in result.errors:
+            console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(code=1)
+    if result.noop:
+        console.print(f"[yellow]no-op:[/yellow] node {node_id} unchanged")
+        return
+    console.print(f"[green]updated:[/green] {node_id}")
     console.print(f"  path: {result.path}")
     _auto_push_if_configured(pool_str, cfg)
 
@@ -1339,6 +1421,11 @@ def cmd_show(
         console.print(f"[bold]tags:[/bold]         {', '.join(detail.tags)}")
     if detail.related_to:
         console.print(f"[bold]related:[/bold]      {', '.join(detail.related_to)}")
+    if detail.meta:
+        required = set(_CONTENT_TYPE_REQUIRED_META.get(detail.content_type, []))
+        for key, value in detail.meta.items():
+            star = "*" if key in required else ""
+            console.print(f"[bold]meta.{key}{star}:[/bold] {value}")
     if detail.body:
         console.print(f"\n{detail.body}")
 

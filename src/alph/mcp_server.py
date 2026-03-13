@@ -39,6 +39,7 @@ from alph.core import (
     list_nodes,
     parse_remote_registry,
     show_node,
+    update_node,
     validate_node,
 )
 from alph.remote import provider_for_url, resolve_pool_readonly
@@ -93,6 +94,8 @@ def tool_add_node(
     status: str | None = None,
     tags: list[str] | None = None,
     timestamp: str | None = None,
+    meta: dict[str, object] | None = None,
+    related_to: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a context node and return its ID and path.
 
@@ -105,13 +108,15 @@ def tool_add_node(
         node_type: 'snapshot' (or 'snap') default, or 'live' for a resource that changes over time.
         content: Optional Markdown body text below the frontmatter.
         content_type: Optional content format. One of: text, gdoc, slack, jira,
-            confluence, email, image, figma. Defaults to omitted (implicitly text).
+            confluence, email, image, figma, task. Defaults to omitted (implicitly text).
         status: 'active' (default/omit), 'archived' (historical, excluded
             from default queries), or 'suppressed' (relevant but verbose,
             excluded from default queries).
         tags: Optional list of semantic labels (e.g. ['repair', 'crv']).
         timestamp: ISO-8601 timestamp. Defaults to now (UTC). Set explicitly
             for backdated or imported nodes.
+        meta: Optional key-value metadata (e.g. {'priority': 'high', 'url': '...'}).
+        related_to: Optional list of related node IDs for cross-references.
 
     Returns:
         dict with keys:
@@ -141,6 +146,8 @@ def tool_add_node(
         status=status,
         tags=tags or [],
         timestamp=timestamp,
+        meta=meta,
+        related_to=related_to,
     )
     if result.duplicate:
         return {
@@ -297,6 +304,67 @@ def tool_validate_pool(
     }
 
 
+def tool_update_node(
+    *,
+    pool_path: str,
+    node_id: str,
+    status: str | None = None,
+    tags_add: list[str] | None = None,
+    tags_remove: list[str] | None = None,
+    meta: dict[str, object] | None = None,
+    content: str | None = None,
+    context: str | None = None,
+    content_type: str | None = None,
+    related_add: list[str] | None = None,
+) -> dict[str, Any]:
+    """Update an existing node's frontmatter and/or body.
+
+    Args:
+        pool_path: Absolute path to the pool directory.
+        node_id: 12-character node ID to update.
+        status: New status (active, archived, suppressed).
+        tags_add: Tags to merge into existing list.
+        tags_remove: Tags to remove from existing list.
+        meta: Key-value pairs to merge into existing meta.
+        content: New body text (replaces entire body).
+        context: New context description.
+        content_type: New content type.
+        related_add: Related node IDs to append.
+
+    Returns:
+        dict with status 'updated', 'noop', or 'error'.
+    """
+    if is_remote_registry(pool_path):
+        return {
+            "status": "error",
+            "errors": [
+                "Write operations on remote pools are not supported in RO mode. "
+                "Use a local pool path or set mode: rw in config."
+            ],
+        }
+    result = update_node(
+        pool_path=Path(pool_path),
+        node_id=node_id,
+        status=status,
+        tags_add=tags_add,
+        tags_remove=tags_remove,
+        meta=meta,
+        content=content,
+        context=context,
+        content_type=content_type,
+        related_add=related_add,
+    )
+    if not result.valid:
+        return {"status": "error", "errors": result.errors}
+    if result.noop:
+        return {"status": "noop", "node_id": node_id}
+    return {
+        "status": "updated",
+        "node_id": result.node_id,
+        "path": str(result.path),
+    }
+
+
 # ---------------------------------------------------------------------------
 # MCP tool registrations
 # ---------------------------------------------------------------------------
@@ -316,9 +384,12 @@ def add_node(
     creator: str,
     node_type: str = "snapshot",
     content: str = "",
+    content_type: str | None = None,
     status: str | None = None,
     tags: list[str] | None = None,
     timestamp: str | None = None,
+    meta: dict[str, object] | None = None,
+    related_to: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a context node in a pool. See tool_add_node for full docs."""
     return tool_add_node(
@@ -327,9 +398,12 @@ def add_node(
         creator=creator,
         node_type=node_type,
         content=content,
+        content_type=content_type,
         status=status,
         tags=tags,
         timestamp=timestamp,
+        meta=meta,
+        related_to=related_to,
     )
 
 
@@ -378,6 +452,41 @@ def validate_pool(
 ) -> dict[str, Any]:
     """Validate all nodes in a pool against the schema. See tool_validate_pool for full docs."""
     return tool_validate_pool(pool_path=pool_path)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Update context node",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
+def update_pool_node(
+    pool_path: str,
+    node_id: str,
+    status: str | None = None,
+    tags_add: list[str] | None = None,
+    tags_remove: list[str] | None = None,
+    meta: dict[str, object] | None = None,
+    content: str | None = None,
+    context: str | None = None,
+    content_type: str | None = None,
+    related_add: list[str] | None = None,
+) -> dict[str, Any]:
+    """Update an existing node. See tool_update_node for full docs."""
+    return tool_update_node(
+        pool_path=pool_path,
+        node_id=node_id,
+        status=status,
+        tags_add=tags_add,
+        tags_remove=tags_remove,
+        meta=meta,
+        content=content,
+        context=context,
+        content_type=content_type,
+        related_add=related_add,
+    )
 
 
 # ---------------------------------------------------------------------------
