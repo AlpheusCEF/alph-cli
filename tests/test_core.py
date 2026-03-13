@@ -10,6 +10,7 @@ from alph.core import (
     AlphConfig,
     RegistryEntry,
     RemoteRegistryRef,
+    _VALID_CONTENT_TYPES,
     check_git_state,
     check_idempotency,
     collect_registries,
@@ -2521,3 +2522,194 @@ def test_init_pool_preserves_comment_above_registry_entry(tmp_path: Path) -> Non
     )
 
     assert "# scratch registry for testing" in config_path.read_text()
+
+
+# ---------------------------------------------------------------------------
+# content_type field
+# ---------------------------------------------------------------------------
+
+
+def test_valid_content_types_set_is_not_empty() -> None:
+    """_VALID_CONTENT_TYPES contains the expected values."""
+    assert "text" in _VALID_CONTENT_TYPES
+    assert "gdoc" in _VALID_CONTENT_TYPES
+    assert "slack" in _VALID_CONTENT_TYPES
+    assert "jira" in _VALID_CONTENT_TYPES
+
+
+def test_node_without_content_type_passes_validation() -> None:
+    """A node without content_type is valid — text is the implicit default."""
+    result = validate_node(_base_node())
+    assert result.valid is True
+
+
+def test_node_with_text_content_type_passes_validation() -> None:
+    """A node with content_type: text passes validation."""
+    result = validate_node(_base_node(content_type="text"))
+    assert result.valid is True
+
+
+def test_node_with_unknown_content_type_fails_validation() -> None:
+    """A node with an unrecognised content_type fails validation."""
+    result = validate_node(_base_node(content_type="cli"))
+    assert result.valid is False
+    assert any("content_type" in e for e in result.errors)
+
+
+def test_node_with_gdoc_content_type_and_url_passes_validation() -> None:
+    """A gdoc node with meta.url passes validation."""
+    node = _base_node(content_type="gdoc", meta={"url": "https://docs.google.com/document/d/abc"})
+    result = validate_node(node)
+    assert result.valid is True
+
+
+def test_node_with_gdoc_content_type_missing_url_fails_validation() -> None:
+    """A gdoc node without meta.url fails validation."""
+    node = _base_node(content_type="gdoc", meta={"title": "Some Doc"})
+    result = validate_node(node)
+    assert result.valid is False
+    assert any("meta.url" in e for e in result.errors)
+
+
+def test_node_with_jira_content_type_and_required_meta_passes_validation() -> None:
+    """A jira node with meta.url and meta.issue_key passes validation."""
+    node = _base_node(
+        content_type="jira",
+        meta={"url": "https://jira.example.com/browse/AUTH-123", "issue_key": "AUTH-123"},
+    )
+    result = validate_node(node)
+    assert result.valid is True
+
+
+def test_node_with_jira_content_type_missing_issue_key_fails_validation() -> None:
+    """A jira node without meta.issue_key fails validation."""
+    node = _base_node(
+        content_type="jira",
+        meta={"url": "https://jira.example.com/browse/AUTH-123"},
+    )
+    result = validate_node(node)
+    assert result.valid is False
+    assert any("issue_key" in e for e in result.errors)
+
+
+def test_node_with_slack_content_type_and_url_passes_validation() -> None:
+    """A slack node with meta.url satisfies the anchor requirement."""
+    node = _base_node(
+        content_type="slack",
+        meta={"url": "https://slack.com/archives/C123/p456"},
+    )
+    result = validate_node(node)
+    assert result.valid is True
+
+
+def test_node_with_slack_content_type_and_channel_ts_passes_validation() -> None:
+    """A slack node with meta.channel + meta.thread_ts satisfies the anchor requirement."""
+    node = _base_node(
+        content_type="slack",
+        meta={"channel": "C123", "thread_ts": "1234567890.123456"},
+    )
+    result = validate_node(node)
+    assert result.valid is True
+
+
+def test_node_with_slack_content_type_missing_anchor_fails_validation() -> None:
+    """A slack node with neither url nor channel+thread_ts fails validation."""
+    node = _base_node(content_type="slack", meta={"text": "some message"})
+    result = validate_node(node)
+    assert result.valid is False
+    assert any("slack" in e for e in result.errors)
+
+
+def test_create_node_writes_content_type_to_frontmatter(tmp_path: Path) -> None:
+    """create_node writes content_type to frontmatter when provided."""
+    pool = _make_pool(tmp_path)
+    result = create_node(
+        pool_path=pool,
+        source="cli",
+        node_type="snapshot",
+        context="Google Doc for auth design",
+        creator="chase@example.com",
+        content_type="gdoc",
+        meta={"url": "https://docs.google.com/document/d/abc"},
+    )
+    frontmatter = extract_frontmatter(result.path.read_text())
+    assert frontmatter is not None
+    assert frontmatter["content_type"] == "gdoc"
+
+
+def test_create_node_omits_content_type_when_not_provided(tmp_path: Path) -> None:
+    """create_node does not write content_type when not given — text is implicit."""
+    pool = _make_pool(tmp_path)
+    result = create_node(
+        pool_path=pool,
+        source="cli",
+        node_type="snapshot",
+        context="Plain text note",
+        creator="chase@example.com",
+    )
+    frontmatter = extract_frontmatter(result.path.read_text())
+    assert frontmatter is not None
+    assert "content_type" not in frontmatter
+
+
+def test_list_nodes_includes_content_type_in_summary(tmp_path: Path) -> None:
+    """list_nodes returns NodeSummary with content_type populated."""
+    pool = _make_pool(tmp_path)
+    create_node(
+        pool_path=pool,
+        source="cli",
+        node_type="snapshot",
+        context="Jira ticket AUTH-456",
+        creator="chase@example.com",
+        content_type="jira",
+        meta={"url": "https://jira.example.com/browse/AUTH-456", "issue_key": "AUTH-456"},
+    )
+    summaries = list_nodes(pool)
+    assert len(summaries) == 1
+    assert summaries[0].content_type == "jira"
+
+
+def test_list_nodes_defaults_content_type_to_text_for_nodes_without_field(tmp_path: Path) -> None:
+    """list_nodes returns content_type='text' for nodes that don't have the field."""
+    pool = _make_pool(tmp_path)
+    create_node(
+        pool_path=pool,
+        source="cli",
+        node_type="snapshot",
+        context="Plain old note",
+        creator="chase@example.com",
+    )
+    summaries = list_nodes(pool)
+    assert summaries[0].content_type == "text"
+
+
+def test_show_node_includes_content_type_in_detail(tmp_path: Path) -> None:
+    """show_node returns NodeDetail with content_type populated."""
+    pool = _make_pool(tmp_path)
+    result = create_node(
+        pool_path=pool,
+        source="cli",
+        node_type="snapshot",
+        context="Figma design file",
+        creator="chase@example.com",
+        content_type="figma",
+        meta={"url": "https://figma.com/file/abc"},
+    )
+    detail = show_node(pool, result.node_id)
+    assert detail is not None
+    assert detail.content_type == "figma"
+
+
+def test_show_node_defaults_content_type_to_text(tmp_path: Path) -> None:
+    """show_node returns content_type='text' for nodes without the field."""
+    pool = _make_pool(tmp_path)
+    result = create_node(
+        pool_path=pool,
+        source="cli",
+        node_type="snapshot",
+        context="Text note",
+        creator="chase@example.com",
+    )
+    detail = show_node(pool, result.node_id)
+    assert detail is not None
+    assert detail.content_type == "text"

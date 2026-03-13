@@ -89,6 +89,7 @@ def tool_add_node(
     creator: str,
     node_type: str = "snapshot",
     content: str = "",
+    content_type: str | None = None,
     status: str | None = None,
     tags: list[str] | None = None,
     timestamp: str | None = None,
@@ -103,6 +104,8 @@ def tool_add_node(
         creator: Email address of the person or system creating this node.
         node_type: 'snapshot' (or 'snap') default, or 'live' for a resource that changes over time.
         content: Optional Markdown body text below the frontmatter.
+        content_type: Optional content format. One of: text, gdoc, slack, jira,
+            confluence, email, image, figma. Defaults to omitted (implicitly text).
         status: 'active' (default/omit), 'archived' (historical, excluded
             from default queries), or 'suppressed' (relevant but verbose,
             excluded from default queries).
@@ -134,6 +137,7 @@ def tool_add_node(
         context=context,
         creator=creator,
         content=content,
+        content_type=content_type,
         status=status,
         tags=tags or [],
         timestamp=timestamp,

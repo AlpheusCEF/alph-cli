@@ -146,6 +146,7 @@ class NodeSummary:
     timestamp: str
     source: str
     status: str = "active"
+    content_type: str = "text"
 
 
 @dataclass(frozen=True)
@@ -162,6 +163,7 @@ class NodeDetail:
     tags: list[str] = field(default_factory=list)
     related_to: list[str] = field(default_factory=list)
     meta: dict[str, object] = field(default_factory=dict)
+    content_type: str = "text"
 
 
 @dataclass(frozen=True)
@@ -335,6 +337,19 @@ _VALID_SCHEMA_VERSIONS = {"1"}
 _VALID_STATUSES = {"active", "archived", "suppressed"}
 _DEFAULT_STATUS = "active"
 
+_VALID_CONTENT_TYPES = {"text", "gdoc", "slack", "jira", "confluence", "email", "image", "figma"}
+
+# Required meta fields per content_type. Keys not listed here (e.g. "text") have no requirements.
+_CONTENT_TYPE_REQUIRED_META: dict[str, list[str]] = {
+    "gdoc": ["url"],
+    "slack": [],  # url OR (channel + thread_ts) — checked in validate_node logic
+    "jira": ["url", "issue_key"],
+    "confluence": ["url"],
+    "email": ["from", "subject"],
+    "image": ["url"],
+    "figma": ["url"],
+}
+
 
 # ---------------------------------------------------------------------------
 # Parsing
@@ -402,6 +417,31 @@ def validate_node(frontmatter: dict[str, object]) -> ValidationResult:
             f"invalid status: '{frontmatter['status']}'"
             f" (must be one of: {sorted(_VALID_STATUSES)})"
         )
+
+    if "content_type" in frontmatter:
+        ct = frontmatter["content_type"]
+        if ct not in _VALID_CONTENT_TYPES:
+            errors.append(
+                f"invalid content_type: '{ct}'"
+                f" (valid values: {', '.join(sorted(_VALID_CONTENT_TYPES))})"
+            )
+        else:
+            meta = frontmatter.get("meta") or {}
+            if isinstance(meta, dict):
+                if ct == "slack":
+                    # requires url OR (channel + thread_ts)
+                    has_url = "url" in meta
+                    has_channel_ts = "channel" in meta and "thread_ts" in meta
+                    if not has_url and not has_channel_ts:
+                        errors.append(
+                            "content_type 'slack' requires meta.url OR (meta.channel + meta.thread_ts)"
+                        )
+                elif ct in _CONTENT_TYPE_REQUIRED_META:
+                    for field in _CONTENT_TYPE_REQUIRED_META[ct]:
+                        if field not in meta:
+                            errors.append(
+                                f"content_type '{ct}' requires meta.{field}"
+                            )
 
     return ValidationResult(valid=len(errors) == 0, errors=errors)
 
@@ -1296,6 +1336,7 @@ def create_node(
     creator: str,
     timestamp: str | None = None,
     content: str = "",
+    content_type: str | None = None,
     status: str | None = None,
     tags: list[str] | None = None,
     related_to: list[str] | None = None,
@@ -1316,6 +1357,8 @@ def create_node(
         creator: Email address of the creator.
         timestamp: ISO-8601 timestamp; defaults to now (UTC).
         content: Optional Markdown body below the frontmatter.
+        content_type: Optional content format (text, gdoc, slack, jira, confluence,
+            email, image, figma). Defaults to omitted (implicitly "text").
         tags: Optional semantic labels.
         related_to: Optional list of cross-reference strings.
         meta: Optional source-specific key-value pairs.
@@ -1356,6 +1399,8 @@ def create_node(
         "context": context,
         "creator": creator,
     }
+    if content_type is not None:
+        frontmatter["content_type"] = content_type
     if status is not None:
         frontmatter["status"] = status
     if tags:
@@ -1437,6 +1482,7 @@ def list_nodes(
                     timestamp=str(frontmatter.get("timestamp", "")),
                     source=str(frontmatter.get("source", "")),
                     status=node_status,
+                    content_type=str(frontmatter.get("content_type", "text")),
                 )
             )
     return summaries
@@ -1478,6 +1524,7 @@ def show_node(pool_path: Path, node_id: str) -> NodeDetail | None:
                 tags=[str(t) for t in tags] if isinstance(tags, list) else [],
                 related_to=[str(r) for r in related_to] if isinstance(related_to, list) else [],
                 meta=dict(meta) if isinstance(meta, dict) else {},
+                content_type=str(frontmatter.get("content_type", "text")),
             )
     return None
 

@@ -20,6 +20,7 @@ from alph.core import (
     AlphConfig,
     PoolSummary,
     RegistryEntry,
+    _VALID_CONTENT_TYPES,
     check_git_state,
     collect_registries,
     create_node,
@@ -1160,11 +1161,18 @@ def cmd_add(
     creator: str | None = typer.Option(None, "--creator", help="Creator email address. Defaults to creator from config."),
     node_type: str = typer.Option("snapshot", "--type", help="'snapshot' (or 'snap') or 'live'."),
     content: str = typer.Option("", "--content", help="Optional Markdown body."),
+    content_type: str | None = typer.Option(None, "--content-type", "--ct", help=f"Content format: {', '.join(sorted(_VALID_CONTENT_TYPES))}. Defaults to text."),
     status: str | None = typer.Option(None, "--status", help="active (default), archived (done — keep for history), or suppressed (temporarily hidden — still relevant)."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
     """Create a context node in a pool."""
     _apply_verbose(verbose)
+    if content_type is not None and content_type not in _VALID_CONTENT_TYPES:
+        console.print(
+            f"[red]Error:[/red] unknown content_type '{content_type}'. "
+            f"Valid values: {', '.join(sorted(_VALID_CONTENT_TYPES))}"
+        )
+        raise typer.Exit(code=1)
     cfg = _load_cli_config()
     pool_str = _require_pool(pool, cfg)
     resolved_creator = _require_creator(creator, cfg)
@@ -1176,6 +1184,7 @@ def cmd_add(
             context=context,
             creator=resolved_creator,
             content=content,
+            content_type=content_type,
             status=status,
             auto_commit=cfg.auto_commit,
         )
@@ -1237,8 +1246,8 @@ def cmd_list(
 
     if fmt == "json":
         print(json.dumps([
-            {"id": s.node_id, "type": s.node_type, "status": s.status,
-             "context": s.context, "timestamp": s.timestamp}
+            {"id": s.node_id, "type": s.node_type, "content_type": s.content_type,
+             "status": s.status, "context": s.context, "timestamp": s.timestamp}
             for s in summaries
         ], indent=2))
         return
@@ -1246,8 +1255,8 @@ def cmd_list(
     if fmt == "yaml":
         import yaml as _yaml
         print(_yaml.dump(
-            [{"id": s.node_id, "type": s.node_type, "status": s.status,
-              "context": s.context, "timestamp": s.timestamp}
+            [{"id": s.node_id, "type": s.node_type, "content_type": s.content_type,
+              "status": s.status, "context": s.context, "timestamp": s.timestamp}
              for s in summaries],
             default_flow_style=False, allow_unicode=True,
         ), end="")
@@ -1256,10 +1265,10 @@ def cmd_list(
     if fmt == "csv":
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(["id", "type", "status", "context", "timestamp"])
+        writer.writerow(["id", "type", "content_type", "status", "context", "timestamp"])
         for s in summaries:
             writer.writerow([
-                s.node_id, s.node_type, s.status,
+                s.node_id, s.node_type, s.content_type, s.status,
                 s.context, s.timestamp,
             ])
         print(buf.getvalue(), end="")
@@ -1290,13 +1299,14 @@ def cmd_list(
     table = Table(show_header=True, header_style="bold", row_styles=["", "dim"], expand=False)
     table.add_column("ID", style="dim", width=14)
     table.add_column("type", width=7)
+    table.add_column("content_type", width=11)
     table.add_column("status", width=10)
     table.add_column("context", max_width=80)
     table.add_column("timestamp", width=22)
     for s in summaries:
         display_type = "snap" if s.node_type == "snapshot" else s.node_type
         table.add_row(
-            s.node_id, display_type, s.status, s.context, s.timestamp,
+            s.node_id, display_type, s.content_type, s.status, s.context, s.timestamp,
         )
     console.print(table)
 
@@ -1318,16 +1328,17 @@ def cmd_show(
     if detail is None:
         console.print(f"[red]not found:[/red] {node_id}")
         raise typer.Exit(code=1)
-    console.print(f"[bold]id:[/bold]        {detail.node_id}")
-    console.print(f"[bold]context:[/bold]   {detail.context}")
-    console.print(f"[bold]type:[/bold]      {detail.node_type}")
-    console.print(f"[bold]source:[/bold]    {detail.source}")
-    console.print(f"[bold]creator:[/bold]   {detail.creator}")
-    console.print(f"[bold]timestamp:[/bold] {detail.timestamp}")
+    console.print(f"[bold]id:[/bold]           {detail.node_id}")
+    console.print(f"[bold]context:[/bold]      {detail.context}")
+    console.print(f"[bold]type:[/bold]         {detail.node_type}")
+    console.print(f"[bold]content_type:[/bold] {detail.content_type}")
+    console.print(f"[bold]source:[/bold]       {detail.source}")
+    console.print(f"[bold]creator:[/bold]      {detail.creator}")
+    console.print(f"[bold]timestamp:[/bold]    {detail.timestamp}")
     if detail.tags:
-        console.print(f"[bold]tags:[/bold]      {', '.join(detail.tags)}")
+        console.print(f"[bold]tags:[/bold]         {', '.join(detail.tags)}")
     if detail.related_to:
-        console.print(f"[bold]related:[/bold]   {', '.join(detail.related_to)}")
+        console.print(f"[bold]related:[/bold]      {', '.join(detail.related_to)}")
     if detail.body:
         console.print(f"\n{detail.body}")
 
