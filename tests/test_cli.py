@@ -2479,3 +2479,111 @@ def test_completions_install_writes_file_and_prints_path(
     assert "#compdef alph" in installed.read_text()
     assert "Completion script installed" in result.output
     assert "_alph" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Skill commands
+# ---------------------------------------------------------------------------
+
+
+def test_skill_install_creates_symlink(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """skill install creates a symlink from the skill dir to the source SKILL.md."""
+    skill_dir = tmp_path / ".claude" / "skills" / "context-architect"
+    source_file = tmp_path / "share" / "alph" / "SKILL.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# Test Skill")
+
+    monkeypatch.setattr("alph.cli._SKILL_TARGET_DIR", skill_dir)
+    monkeypatch.setattr("alph.cli._find_skill_source", lambda: source_file)
+
+    result = runner.invoke(app, ["skill", "install"])
+    assert result.exit_code == 0
+    target = skill_dir / "SKILL.md"
+    assert target.is_symlink()
+    assert target.resolve() == source_file.resolve()
+    assert "Installed" in result.output
+
+
+def test_skill_install_backs_up_existing_file(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """skill install backs up an existing non-symlink SKILL.md."""
+    skill_dir = tmp_path / ".claude" / "skills" / "context-architect"
+    skill_dir.mkdir(parents=True)
+    existing = skill_dir / "SKILL.md"
+    existing.write_text("# Old Skill")
+
+    source_file = tmp_path / "share" / "alph" / "SKILL.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# New Skill")
+
+    monkeypatch.setattr("alph.cli._SKILL_TARGET_DIR", skill_dir)
+    monkeypatch.setattr("alph.cli._find_skill_source", lambda: source_file)
+
+    result = runner.invoke(app, ["skill", "install"])
+    assert result.exit_code == 0
+    assert (skill_dir / "SKILL.md.bak").exists()
+    assert (skill_dir / "SKILL.md.bak").read_text() == "# Old Skill"
+    assert (skill_dir / "SKILL.md").is_symlink()
+
+
+def test_skill_install_replaces_stale_symlink(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """skill install replaces an existing symlink pointing to the wrong target."""
+    skill_dir = tmp_path / ".claude" / "skills" / "context-architect"
+    skill_dir.mkdir(parents=True)
+    old_source = tmp_path / "old" / "SKILL.md"
+    old_source.parent.mkdir(parents=True)
+    old_source.write_text("# Old")
+    (skill_dir / "SKILL.md").symlink_to(old_source)
+
+    new_source = tmp_path / "new" / "SKILL.md"
+    new_source.parent.mkdir(parents=True)
+    new_source.write_text("# New")
+
+    monkeypatch.setattr("alph.cli._SKILL_TARGET_DIR", skill_dir)
+    monkeypatch.setattr("alph.cli._find_skill_source", lambda: new_source)
+
+    result = runner.invoke(app, ["skill", "install"])
+    assert result.exit_code == 0
+    assert (skill_dir / "SKILL.md").resolve() == new_source.resolve()
+
+
+def test_skill_status_not_installed(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """skill status reports when not installed."""
+    skill_dir = tmp_path / ".claude" / "skills" / "context-architect"
+    monkeypatch.setattr("alph.cli._SKILL_TARGET_DIR", skill_dir)
+    monkeypatch.setattr("alph.cli._find_skill_source", lambda: None)
+
+    result = runner.invoke(app, ["skill", "status"])
+    assert result.exit_code == 0
+    assert "Not installed" in result.output
+
+
+def test_skill_status_symlink_current(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """skill status reports current when symlink points to expected source."""
+    skill_dir = tmp_path / ".claude" / "skills" / "context-architect"
+    skill_dir.mkdir(parents=True)
+    source_file = tmp_path / "share" / "alph" / "SKILL.md"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("# Skill")
+    (skill_dir / "SKILL.md").symlink_to(source_file)
+
+    monkeypatch.setattr("alph.cli._SKILL_TARGET_DIR", skill_dir)
+    monkeypatch.setattr("alph.cli._find_skill_source", lambda: source_file)
+
+    result = runner.invoke(app, ["skill", "status"])
+    assert result.exit_code == 0
+    assert "auto-updates" in result.output
+
+
+def test_skill_status_copy_warns(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """skill status warns when SKILL.md is a copy not a symlink."""
+    skill_dir = tmp_path / ".claude" / "skills" / "context-architect"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Stale copy")
+
+    monkeypatch.setattr("alph.cli._SKILL_TARGET_DIR", skill_dir)
+    monkeypatch.setattr("alph.cli._find_skill_source", lambda: None)
+
+    result = runner.invoke(app, ["skill", "status"])
+    assert result.exit_code == 0
+    assert "copy" in result.output
+    assert "stale" in result.output

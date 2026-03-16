@@ -71,12 +71,14 @@ pool_app = typer.Typer(help="Pool commands.", invoke_without_command=True, conte
 config_app = typer.Typer(help="Config file commands.", invoke_without_command=True, context_settings=_help_settings)
 completions_app = typer.Typer(help="Shell tab completion commands.", context_settings=_help_settings)
 barrel_app = typer.Typer(help="Barrel (hydration cache) commands.", invoke_without_command=True, context_settings=_help_settings)
+skill_app = typer.Typer(help="Skill management commands.", context_settings=_help_settings)
 app.add_typer(registry_app, name="registry")
 app.add_typer(registry_app, name="reg", hidden=True)
 app.add_typer(pool_app, name="pool")
 app.add_typer(barrel_app, name="barrel")
 app.add_typer(barrel_app, name="bar", hidden=True)
 app.add_typer(barrel_app, name="b", hidden=True)
+app.add_typer(skill_app, name="skill")
 app.add_typer(config_app, name="config")
 app.add_typer(completions_app, name="completions")
 
@@ -2204,3 +2206,104 @@ def barrel_export_cmd(
         console.print("[dim]No barrel cache entries to export.[/dim]")
         return
     console.print(output)
+
+
+# ---------------------------------------------------------------------------
+# Skill commands
+# ---------------------------------------------------------------------------
+
+_SKILL_NAME = "context-architect"
+_SKILL_TARGET_DIR = Path.home() / ".claude" / "skills" / _SKILL_NAME
+
+
+def _find_skill_source() -> Path | None:
+    """Find the SKILL.md source file.
+
+    Checks in order:
+    1. Homebrew share path (stable across versions)
+    2. Alongside the installed package (dev/pip installs)
+    3. Repo root (development)
+    """
+    # Homebrew: $(brew --prefix)/share/alph/SKILL.md
+    brew_share = Path("/opt/homebrew/share/alph/SKILL.md")
+    if brew_share.exists():
+        return brew_share
+    # Linux brew
+    brew_share_linux = Path("/home/linuxbrew/.linuxbrew/share/alph/SKILL.md")
+    if brew_share_linux.exists():
+        return brew_share_linux
+    # Alongside package (pip install from sdist that includes SKILL.md)
+    pkg_dir = Path(__file__).resolve().parent
+    for candidate in [
+        pkg_dir / "SKILL.md",
+        pkg_dir.parent / "SKILL.md",
+        pkg_dir.parent.parent / "SKILL.md",
+    ]:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+@skill_app.command("install")
+def skill_install(
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Install the context-architect skill as a symlink to the alph-managed copy."""
+    _apply_verbose(verbose)
+    source = _find_skill_source()
+    if source is None:
+        console.print("[red]error:[/red] could not find SKILL.md source. "
+                      "Is alph installed via Homebrew?")
+        raise typer.Exit(1)
+
+    target = _SKILL_TARGET_DIR / "SKILL.md"
+
+    # Check for existing non-symlink file
+    if target.exists() and not target.is_symlink():
+        console.print(
+            f"[yellow]warning:[/yellow] {target} exists and is not a symlink.\n"
+            f"  Replacing with symlink to {source}\n"
+            f"  (old file backed up to {target}.bak)"
+        )
+        target.rename(target.with_suffix(".md.bak"))
+
+    _SKILL_TARGET_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Remove existing symlink if present (may point to old version)
+    if target.is_symlink():
+        target.unlink()
+
+    target.symlink_to(source)
+    console.print(f"Installed: {target} -> {source}")
+
+
+@skill_app.command("status")
+def skill_status(
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Check if the context-architect skill is installed and current."""
+    _apply_verbose(verbose)
+    target = _SKILL_TARGET_DIR / "SKILL.md"
+    source = _find_skill_source()
+
+    if not target.exists():
+        console.print("[yellow]Not installed.[/yellow] Run: alph skill install")
+        return
+
+    if target.is_symlink():
+        link_target = target.resolve()
+        if source and link_target == source.resolve():
+            console.print(f"[green]Installed (symlink, auto-updates).[/green]\n  {target} -> {link_target}")
+        else:
+            console.print(
+                f"[yellow]Installed (symlink, stale target).[/yellow]\n"
+                f"  Points to: {link_target}\n"
+                f"  Expected:  {source}\n"
+                f"  Run: alph skill install"
+            )
+    else:
+        console.print(
+            f"[yellow]Installed (copy, may be stale).[/yellow]\n"
+            f"  {target} is a file, not a symlink.\n"
+            f"  Run: alph skill install  (to replace with auto-updating symlink)"
+        )

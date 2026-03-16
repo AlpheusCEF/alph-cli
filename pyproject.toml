@@ -1,6 +1,6 @@
 [project]
 name = "alph-cli"
-version = "0.1.37"
+version = "0.1.38"
 description = "Alpheus Context Engine Framework CLI"
 authors = [
     {name = "Chase Pettet"}
@@ -23,7 +23,7 @@ alph-mcp = "alph.mcp_server:main"
 
 [tool.poetry]
 packages = [{include = "alph", from = "src"}]
-include = [{path = "man", format = "sdist"}]
+include = [{path = "man", format = "sdist"}, {path = "SKILL.md", format = "sdist"}]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0"
