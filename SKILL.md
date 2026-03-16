@@ -57,9 +57,23 @@ MCP servers).
 
 ## Barrel — hydration cache
 
-The barrel is a per-pool cache of hydrated live node content. Use the
-`alph barrel` CLI (aliases: `alph bar`, `alph b`) for all cache operations.
-Never manually write barrel files — the CLI ensures consistent frontmatter.
+The barrel is a per-pool cache of hydrated live node content. **Barrel
+caching is always on by default.** Every time you hydrate a live node,
+cache the result. Every time you need content, check the barrel first.
+
+Use the `alph barrel` CLI (aliases: `alph bar`, `alph b`) for all cache
+operations. Never manually write barrel files — the CLI ensures consistent
+frontmatter.
+
+### Defaults (no barrel config in hydration.yaml)
+
+When a registry has no `barrel:` section, these defaults apply:
+
+- **default_ttl**: 4h — all content types expire after 4 hours
+- **fetch_mode**: full — always replace entire cache on refresh
+- **Snapshots**: Cache on first read, never re-fetch (content is inline)
+
+Registries can override per type in `hydration.yaml → barrel → types`.
 
 ### Barrel CLI commands
 
