@@ -8,6 +8,9 @@ import yaml
 from alph.core import (
     RESERVED_NAMES,
     AlphConfig,
+    HydrationConfig,
+    HydrationTypeConfig,
+    NodeDetail,
     RegistryEntry,
     RemoteRegistryRef,
     _VALID_CONTENT_TYPES,
@@ -18,6 +21,7 @@ from alph.core import (
     default_global_config_text,
     extract_frontmatter,
     find_registry_config,
+    find_registry_for_pool,
     generate_id,
     init_pool,
     init_registry,
@@ -26,6 +30,7 @@ from alph.core import (
     list_nodes,
     list_pools,
     load_config,
+    load_hydration_config,
     load_state,
     parse_remote_registry,
     resolve_default_pool,
@@ -2913,3 +2918,316 @@ def test_update_node_related_to_full_replacement(tmp_path: Path) -> None:
     detail = show_node(pool, node_id)
     assert detail is not None
     assert set(detail.related_to) == {"new1", "new2"}
+
+
+# ---------------------------------------------------------------------------
+# slack validation relaxation — channel-only is valid
+# ---------------------------------------------------------------------------
+
+
+def test_node_with_slack_content_type_and_channel_only_passes_validation() -> None:
+    """A slack node with only meta.channel (no thread_ts) is valid — it points to the whole channel."""
+    node = _base_node(content_type="slack", meta={"channel": "C123"})
+    result = validate_node(node)
+    assert result.valid is True
+
+
+# ---------------------------------------------------------------------------
+# HydrationConfig data types
+# ---------------------------------------------------------------------------
+
+
+def test_hydration_type_config_construction() -> None:
+    """HydrationTypeConfig can be constructed with all fields."""
+    cfg = HydrationTypeConfig(
+        provider="google-docs-mcp",
+        base_url="https://docs.google.com",
+        instructions="Use the Google Docs MCP server.",
+    )
+    assert cfg.provider == "google-docs-mcp"
+    assert cfg.base_url == "https://docs.google.com"
+    assert cfg.instructions == "Use the Google Docs MCP server."
+
+
+def test_hydration_type_config_defaults() -> None:
+    """HydrationTypeConfig defaults all fields to empty strings."""
+    cfg = HydrationTypeConfig()
+    assert cfg.provider == ""
+    assert cfg.base_url == ""
+    assert cfg.instructions == ""
+
+
+def test_hydration_type_config_is_immutable() -> None:
+    """HydrationTypeConfig is frozen — attributes cannot be reassigned."""
+    cfg = HydrationTypeConfig(provider="test")
+    try:
+        cfg.provider = "changed"  # type: ignore[misc]
+        assert False, "Should have raised FrozenInstanceError"
+    except AttributeError:
+        pass
+
+
+def test_hydration_config_construction() -> None:
+    """HydrationConfig can be constructed with a types dict."""
+    cfg = HydrationConfig(types={
+        "gdoc": HydrationTypeConfig(provider="google-docs-mcp"),
+    })
+    assert "gdoc" in cfg.types
+    assert cfg.types["gdoc"].provider == "google-docs-mcp"
+
+
+def test_hydration_config_declared_types() -> None:
+    """HydrationConfig.declared_types returns frozenset of type keys."""
+    cfg = HydrationConfig(types={
+        "gdoc": HydrationTypeConfig(),
+        "jira": HydrationTypeConfig(),
+    })
+    assert cfg.declared_types == frozenset({"gdoc", "jira"})
+
+
+def test_hydration_config_empty() -> None:
+    """HydrationConfig with no types has empty declared_types."""
+    cfg = HydrationConfig()
+    assert cfg.declared_types == frozenset()
+    assert cfg.types == {}
+
+
+def test_hydration_config_is_immutable() -> None:
+    """HydrationConfig is frozen — attributes cannot be reassigned."""
+    cfg = HydrationConfig()
+    try:
+        cfg.types = {}  # type: ignore[misc]
+        assert False, "Should have raised FrozenInstanceError"
+    except AttributeError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# load_hydration_config
+# ---------------------------------------------------------------------------
+
+
+def test_load_hydration_config_missing_file(tmp_path: Path) -> None:
+    """load_hydration_config returns empty HydrationConfig when file is missing."""
+    cfg = load_hydration_config(tmp_path)
+    assert cfg.types == {}
+    assert cfg.declared_types == frozenset()
+
+
+def test_load_hydration_config_valid_file(tmp_path: Path) -> None:
+    """load_hydration_config parses all fields from a valid hydration.yaml."""
+    hydration_yaml = tmp_path / "hydration.yaml"
+    hydration_yaml.write_text(
+        "types:\n"
+        "  gdoc:\n"
+        "    provider: google-docs-mcp\n"
+        "    base_url: https://docs.google.com\n"
+        "    instructions: Use the Google Docs MCP server.\n"
+        "  jira:\n"
+        "    provider: atlassian-mcp\n"
+        "    instructions: Use Jira.\n"
+    )
+    cfg = load_hydration_config(tmp_path)
+    assert cfg.declared_types == frozenset({"gdoc", "jira"})
+    assert cfg.types["gdoc"].provider == "google-docs-mcp"
+    assert cfg.types["gdoc"].base_url == "https://docs.google.com"
+    assert cfg.types["gdoc"].instructions == "Use the Google Docs MCP server."
+    assert cfg.types["jira"].provider == "atlassian-mcp"
+    assert cfg.types["jira"].base_url == ""
+
+
+def test_load_hydration_config_no_types_key(tmp_path: Path) -> None:
+    """load_hydration_config returns empty config when file has no types key."""
+    hydration_yaml = tmp_path / "hydration.yaml"
+    hydration_yaml.write_text("other_key: value\n")
+    cfg = load_hydration_config(tmp_path)
+    assert cfg.types == {}
+
+
+def test_load_hydration_config_extra_fields_ignored(tmp_path: Path) -> None:
+    """load_hydration_config ignores extra fields in type entries for forward compat."""
+    hydration_yaml = tmp_path / "hydration.yaml"
+    hydration_yaml.write_text(
+        "types:\n"
+        "  gdoc:\n"
+        "    provider: google-docs-mcp\n"
+        "    future_field: some_value\n"
+        "    another_field: 42\n"
+    )
+    cfg = load_hydration_config(tmp_path)
+    assert cfg.types["gdoc"].provider == "google-docs-mcp"
+
+
+# ---------------------------------------------------------------------------
+# find_registry_for_pool
+# ---------------------------------------------------------------------------
+
+
+def test_find_registry_for_pool_local_match(tmp_path: Path) -> None:
+    """find_registry_for_pool returns the registry whose pool_home contains the pool."""
+    reg_home = tmp_path / "registries" / "myrepo"
+    pool_path = reg_home / "mypool"
+    pool_path.mkdir(parents=True)
+    cfg = AlphConfig(registries={
+        "myreg": RegistryEntry(pool_home=str(reg_home)),
+    })
+    result = find_registry_for_pool(pool_path, cfg)
+    assert result is not None
+    reg_id, entry = result
+    assert reg_id == "myreg"
+    assert entry.pool_home == str(reg_home)
+
+
+def test_find_registry_for_pool_no_match(tmp_path: Path) -> None:
+    """find_registry_for_pool returns None when no registry matches."""
+    cfg = AlphConfig(registries={
+        "other": RegistryEntry(pool_home="/some/other/path"),
+    })
+    result = find_registry_for_pool(tmp_path / "unrelated", cfg)
+    assert result is None
+
+
+def test_find_registry_for_pool_most_specific_wins(tmp_path: Path) -> None:
+    """find_registry_for_pool returns the most specific (longest prefix) match."""
+    parent = tmp_path / "repos"
+    parent.mkdir()
+    child = parent / "nested"
+    child.mkdir()
+    pool_path = child / "mypool"
+    pool_path.mkdir()
+    cfg = AlphConfig(registries={
+        "broad": RegistryEntry(pool_home=str(parent)),
+        "specific": RegistryEntry(pool_home=str(child)),
+    })
+    result = find_registry_for_pool(pool_path, cfg)
+    assert result is not None
+    reg_id, _ = result
+    assert reg_id == "specific"
+
+
+def test_find_registry_for_pool_clone_path_match(tmp_path: Path) -> None:
+    """find_registry_for_pool matches remote RW registries via clone_path."""
+    clone_dir = tmp_path / "clones" / "myrepo"
+    pool_path = clone_dir / "mypool"
+    pool_path.mkdir(parents=True)
+    cfg = AlphConfig(registries={
+        "remote_rw": RegistryEntry(
+            pool_home="git@github.com:org/repo.git:/",
+            mode="rw",
+            clone_path=str(clone_dir),
+        ),
+    })
+    result = find_registry_for_pool(pool_path, cfg)
+    assert result is not None
+    reg_id, _ = result
+    assert reg_id == "remote_rw"
+
+
+# ---------------------------------------------------------------------------
+# validate_node with registry_types
+# ---------------------------------------------------------------------------
+
+
+def test_validate_node_builtin_types_still_validated_strictly() -> None:
+    """Built-in types are still validated strictly even when registry_types is provided."""
+    node = _base_node(content_type="jira", meta={"url": "https://jira.example.com/PROJ-1"})
+    result = validate_node(node, registry_types=frozenset({"custom_type"}))
+    assert result.valid is False
+    assert any("issue_key" in e for e in result.errors)
+
+
+def test_validate_node_unknown_type_without_registry_types_fails() -> None:
+    """An unknown content_type fails validation when no registry_types is provided."""
+    node = _base_node(content_type="custom_widget")
+    result = validate_node(node)
+    assert result.valid is False
+    assert any("custom_widget" in e for e in result.errors)
+
+
+def test_validate_node_unknown_type_in_registry_types_passes() -> None:
+    """An unknown content_type passes when it's in registry_types."""
+    node = _base_node(content_type="custom_widget")
+    result = validate_node(node, registry_types=frozenset({"custom_widget"}))
+    assert result.valid is True
+
+
+def test_validate_node_builtin_type_uses_builtin_rules_not_registry() -> None:
+    """A type in both built-in and registry_types uses built-in validation rules."""
+    node = _base_node(content_type="gdoc")  # gdoc requires meta.url
+    result = validate_node(node, registry_types=frozenset({"gdoc"}))
+    assert result.valid is False
+    assert any("url" in e for e in result.errors)
+
+
+def test_validate_node_no_registry_types_backwards_compat() -> None:
+    """validate_node without registry_types works as before."""
+    node = _base_node()
+    result = validate_node(node)
+    assert result.valid is True
+
+
+# ---------------------------------------------------------------------------
+# NodeDetail hydration_instructions and show_node with hydration
+# ---------------------------------------------------------------------------
+
+
+def test_node_detail_has_hydration_instructions_field() -> None:
+    """NodeDetail includes hydration_instructions defaulting to empty string."""
+    detail = NodeDetail(
+        node_id="abc123def456",
+        context="test",
+        node_type="snapshot",
+        timestamp="2026-03-16T00:00:00Z",
+        source="cli",
+        creator="test@example.com",
+        body="",
+    )
+    assert detail.hydration_instructions == ""
+
+
+def test_show_node_without_hydration_returns_empty_instructions(tmp_path: Path) -> None:
+    """show_node without hydration config returns empty hydration_instructions."""
+    pool = _make_pool(tmp_path)
+    result = create_node(
+        pool_path=pool, source="cli", node_type="live",
+        context="A Google Doc", creator="chase@example.com",
+        content_type="gdoc", meta={"url": "https://docs.google.com/d/abc"},
+    )
+    detail = show_node(pool, result.node_id)
+    assert detail is not None
+    assert detail.hydration_instructions == ""
+
+
+def test_show_node_with_matching_hydration_returns_instructions(tmp_path: Path) -> None:
+    """show_node with matching hydration config populates hydration_instructions."""
+    pool = _make_pool(tmp_path)
+    result = create_node(
+        pool_path=pool, source="cli", node_type="live",
+        context="A Google Doc", creator="chase@example.com",
+        content_type="gdoc", meta={"url": "https://docs.google.com/d/abc"},
+    )
+    hydration = HydrationConfig(types={
+        "gdoc": HydrationTypeConfig(
+            provider="google-docs-mcp",
+            instructions="Use the Google Docs MCP server.",
+        ),
+    })
+    detail = show_node(pool, result.node_id, hydration=hydration)
+    assert detail is not None
+    assert detail.hydration_instructions == "Use the Google Docs MCP server."
+
+
+def test_show_node_with_non_matching_hydration_returns_empty(tmp_path: Path) -> None:
+    """show_node with hydration config that doesn't match content_type returns empty."""
+    pool = _make_pool(tmp_path)
+    result = create_node(
+        pool_path=pool, source="cli", node_type="live",
+        context="A Slack channel", creator="chase@example.com",
+        content_type="slack", meta={"channel": "C123"},
+    )
+    hydration = HydrationConfig(types={
+        "gdoc": HydrationTypeConfig(instructions="Google docs stuff"),
+    })
+    detail = show_node(pool, result.node_id, hydration=hydration)
+    assert detail is not None
+    assert detail.hydration_instructions == ""

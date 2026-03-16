@@ -33,16 +33,22 @@ import fastmcp
 from mcp.types import ToolAnnotations
 
 from alph.core import (
+    HydrationConfig,
     create_node,
     extract_frontmatter,
+    find_registry_for_pool,
     is_remote_registry,
     list_nodes,
+    load_config,
+    load_hydration_config,
     parse_remote_registry,
     show_node,
     update_node,
     validate_node,
 )
 from alph.remote import provider_for_url, resolve_pool_readonly
+
+_DEFAULT_CONFIG_DIR = Path.home() / ".config" / "alph"
 
 _MCP_SOURCE = f"alph-mcp/v{importlib.metadata.version('alph-cli')}"
 
@@ -56,6 +62,9 @@ mcp = fastmcp.FastMCP(
         "Always use tool_list_nodes to discover existing nodes before adding "
         "new ones — alph deduplicates by ID but a quick scan avoids surprises. "
         "Use tool_show_node to read full content including body text. "
+        "When show_pool_node returns hydration_instructions, follow those "
+        "instructions to resolve the live node content using the indicated "
+        "MCP server or provider. "
         "Use tool_validate_pool to confirm pool health after bulk operations."
     ),
 )
@@ -64,6 +73,19 @@ mcp = fastmcp.FastMCP(
 # ---------------------------------------------------------------------------
 # Remote pool resolution
 # ---------------------------------------------------------------------------
+
+
+def _load_hydration_for_pool(pool_path: str, config_dir: str | None = None) -> HydrationConfig | None:
+    """Load hydration config for a pool by finding its owning registry."""
+    if is_remote_registry(pool_path):
+        return None
+    cfg_dir = Path(config_dir) if config_dir else _DEFAULT_CONFIG_DIR
+    cfg = load_config(global_config_dir=cfg_dir)
+    match = find_registry_for_pool(Path(pool_path), cfg)
+    if match is None:
+        return None
+    _, entry = match
+    return load_hydration_config(Path(entry.pool_home))
 
 
 @contextmanager
@@ -219,25 +241,30 @@ def tool_show_node(
     *,
     pool_path: str,
     node_id: str,
+    config_dir: str | None = None,
 ) -> dict[str, Any]:
     """Show the full content of a node by ID.
 
     Use this after tool_list_nodes to read the body text and all metadata
-    fields of a specific node.
+    fields of a specific node. When the node's content_type matches a type
+    declared in the registry's hydration.yaml, hydration_instructions will
+    contain resolution guidance for the LLM.
 
     Args:
         pool_path: Absolute path to the pool directory.
         node_id: 12-character node ID (from tool_list_nodes output).
+        config_dir: Optional config directory override (for testing).
 
     Returns:
         dict with keys:
             found: True if the node exists, False otherwise
             node: full node detail (when found=True), with keys:
                 node_id, context, node_type, status, timestamp, source,
-                creator, body, tags, related_to, meta
+                creator, body, tags, related_to, meta, hydration_instructions
     """
+    hydration = _load_hydration_for_pool(pool_path, config_dir)
     with _resolve_pool(pool_path) as pool:
-        detail = show_node(pool, node_id)
+        detail = show_node(pool, node_id, hydration=hydration)
     if detail is None:
         return {"found": False}
     return {
@@ -253,6 +280,7 @@ def tool_show_node(
             "tags": detail.tags,
             "related_to": detail.related_to,
             "meta": detail.meta,
+            "hydration_instructions": detail.hydration_instructions,
         },
     }
 
@@ -260,14 +288,18 @@ def tool_show_node(
 def tool_validate_pool(
     *,
     pool_path: str,
+    config_dir: str | None = None,
 ) -> dict[str, Any]:
     """Validate all nodes in a pool against the v1 schema.
 
     Use after bulk imports or before committing a pool to confirm all nodes
     are schema-compliant. Reports each invalid node and its specific errors.
+    Content types declared in the registry's hydration.yaml are accepted
+    without meta validation.
 
     Args:
         pool_path: Absolute path to the pool directory.
+        config_dir: Optional config directory override (for testing).
 
     Returns:
         dict with keys:
@@ -275,6 +307,8 @@ def tool_validate_pool(
             error_count: total number of validation errors found
             errors: list of dicts, each with 'file' and 'errors' keys
     """
+    hydration = _load_hydration_for_pool(pool_path, config_dir)
+    registry_types = hydration.declared_types if hydration and hydration.declared_types else None
     all_errors: list[dict[str, Any]] = []
 
     with _resolve_pool(pool_path) as pool:
@@ -290,7 +324,7 @@ def tool_validate_pool(
                         "errors": ["no frontmatter found"],
                     })
                     continue
-                result = validate_node(frontmatter)
+                result = validate_node(frontmatter, registry_types=registry_types)
                 if not result.valid:
                     all_errors.append({
                         "file": node_file.name,

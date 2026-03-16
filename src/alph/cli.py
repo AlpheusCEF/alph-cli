@@ -20,6 +20,7 @@ from alph.core import (
     _CONTENT_TYPE_REQUIRED_META,
     _VALID_CONTENT_TYPES,
     AlphConfig,
+    HydrationConfig,
     PoolSummary,
     RegistryEntry,
     check_git_state,
@@ -27,6 +28,7 @@ from alph.core import (
     create_node,
     effective_mode,
     extract_frontmatter,
+    find_registry_for_pool,
     init_pool,
     init_registry,
     is_remote_registry,
@@ -34,6 +36,7 @@ from alph.core import (
     list_nodes,
     list_pools,
     load_config,
+    load_hydration_config,
     parse_remote_registry,
     resolve_default_pool,
     resolve_pool_name,
@@ -385,6 +388,37 @@ def _find_entry_for_pool(pool_str: str, cfg: AlphConfig) -> RegistryEntry | None
         except (ValueError, TypeError):
             pass
     return None
+
+
+def _load_hydration_for_pool(pool_str: str, cfg: AlphConfig) -> HydrationConfig | None:
+    """Load hydration config for a pool by finding its owning registry.
+
+    Works for both local and remote pools. For remote RW registries with a
+    clone_path, loads hydration.yaml from the clone. For local registries,
+    loads from pool_home.
+    """
+    entry = _find_entry_for_pool(pool_str, cfg)
+    if entry is None and not is_remote_registry(pool_str):
+        # Fallback: try find_registry_for_pool for local paths.
+        match = find_registry_for_pool(Path(pool_str), cfg)
+        if match is not None:
+            _, entry = match
+    if entry is None:
+        return None
+
+    # Determine where to look for hydration.yaml.
+    if is_remote_registry(entry.pool_home):
+        # For remote RW registries, look in the local clone.
+        if entry.clone_path and Path(entry.clone_path).is_dir():
+            return load_hydration_config(Path(entry.clone_path))
+        # For RO remote, check default clone location.
+        from alph.remote import default_clone_dir
+        ref = parse_remote_registry(entry.pool_home)
+        clone_dir = default_clone_dir(ref.remote_url)
+        if clone_dir.is_dir():
+            return load_hydration_config(clone_dir)
+        return None
+    return load_hydration_config(Path(entry.pool_home))
 
 
 @contextmanager
@@ -1405,8 +1439,10 @@ def cmd_show(
     cfg = _load_cli_config()
     pool_str = _require_pool(pool, cfg)
     _pull_if_requested(pool_str, cfg, pull=pull)
+    # Load hydration config if pool belongs to a known registry.
+    hydration = _load_hydration_for_pool(pool_str, cfg)
     with _pool_context(pool_str, cfg) as resolved_pool:
-        detail = show_node(resolved_pool, node_id)
+        detail = show_node(resolved_pool, node_id, hydration=hydration)
     if detail is None:
         console.print(f"[red]not found:[/red] {node_id}")
         raise typer.Exit(code=1)
@@ -1426,6 +1462,8 @@ def cmd_show(
         for key, value in detail.meta.items():
             star = "*" if key in required else ""
             console.print(f"[bold]meta.{key}{star}:[/bold] {value}")
+    if detail.hydration_instructions:
+        console.print(f"\n[bold]hydration:[/bold]    {detail.hydration_instructions}")
     if detail.body:
         console.print(f"\n{detail.body}")
 
@@ -1447,6 +1485,12 @@ def cmd_validate(
         console.print(f"[red]error:[/red] pool not found: {pool_str}")
         raise typer.Exit(code=1)
 
+    # Load hydration config for registry-declared custom types.
+    registry_types: frozenset[str] | None = None
+    _hydration = _load_hydration_for_pool(pool_str, cfg)
+    if _hydration and _hydration.declared_types:
+        registry_types = _hydration.declared_types
+
     errors_found = False
     node_count = 0
     with _pool_context(pool_str, cfg) as resolved_pool:
@@ -1463,7 +1507,7 @@ def cmd_validate(
                     )
                     errors_found = True
                     continue
-                vresult = validate_node(frontmatter)
+                vresult = validate_node(frontmatter, registry_types=registry_types)
                 if not vresult.valid:
                     errors_found = True
                     for error in vresult.errors:

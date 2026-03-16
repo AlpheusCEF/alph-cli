@@ -268,3 +268,93 @@ def test_tool_update_node_not_found(tmp_path: Path) -> None:
     )
     assert resp["status"] == "error"
     assert "not found" in resp["errors"][0]
+
+
+# ---------------------------------------------------------------------------
+# tool_show_node with hydration
+# ---------------------------------------------------------------------------
+
+
+def test_tool_show_node_returns_hydration_instructions(tmp_path: Path) -> None:
+    """tool_show_node includes hydration_instructions when hydration config matches."""
+    pool = _setup_pool(tmp_path)
+    registry_path = tmp_path / "registry"
+    # Write hydration.yaml to registry root
+    (registry_path / "hydration.yaml").write_text(
+        "types:\n"
+        "  gdoc:\n"
+        "    provider: google-docs-mcp\n"
+        "    instructions: Use the Google Docs MCP server to fetch content.\n"
+    )
+    add_resp = tool_add_node(
+        pool_path=str(pool),
+        context="Auth design doc",
+        creator="chase@example.com",
+        node_type="live",
+        content_type="gdoc",
+        meta={"url": "https://docs.google.com/document/d/abc"},
+    )
+    response = tool_show_node(
+        pool_path=str(pool),
+        node_id=add_resp["node_id"],
+        config_dir=str(tmp_path / "global"),
+    )
+    assert response["found"] is True
+    assert response["node"]["hydration_instructions"] == "Use the Google Docs MCP server to fetch content."
+
+
+def test_tool_show_node_returns_empty_hydration_without_config(tmp_path: Path) -> None:
+    """tool_show_node returns empty hydration_instructions when no hydration.yaml exists."""
+    pool = _setup_pool(tmp_path)
+    add_resp = tool_add_node(
+        pool_path=str(pool),
+        context="Plain note",
+        creator="chase@example.com",
+    )
+    response = tool_show_node(
+        pool_path=str(pool),
+        node_id=add_resp["node_id"],
+        config_dir=str(tmp_path / "global"),
+    )
+    assert response["found"] is True
+    assert response["node"]["hydration_instructions"] == ""
+
+
+# ---------------------------------------------------------------------------
+# tool_validate_pool with registry types
+# ---------------------------------------------------------------------------
+
+
+def test_tool_validate_pool_accepts_custom_type_from_hydration(tmp_path: Path) -> None:
+    """tool_validate_pool passes custom content_type when hydration.yaml declares it."""
+    pool = _setup_pool(tmp_path)
+    registry_path = tmp_path / "registry"
+    # Write a node with custom content_type
+    node_file = pool / "live" / "custom123abc.md"
+    node_file.write_text(
+        "---\n"
+        "schema_version: '1'\n"
+        "id: custom123abc\n"
+        "timestamp: '2026-03-16T00:00:00Z'\n"
+        "source: cli\n"
+        "node_type: live\n"
+        "context: Custom widget\n"
+        "creator: chase@example.com\n"
+        "content_type: custom_widget\n"
+        "---\n"
+    )
+    # Without hydration.yaml, validation fails
+    response = tool_validate_pool(pool_path=str(pool))
+    assert response["valid"] is False
+
+    # Add hydration.yaml
+    (registry_path / "hydration.yaml").write_text(
+        "types:\n"
+        "  custom_widget:\n"
+        "    provider: widget-mcp\n"
+    )
+    response = tool_validate_pool(
+        pool_path=str(pool),
+        config_dir=str(tmp_path / "global"),
+    )
+    assert response["valid"] is True

@@ -2372,6 +2372,98 @@ def test_completions_show_detects_shell_from_env(tmp_path: Path, monkeypatch) ->
     assert "#compdef alph" in result.output
 
 
+# ---------------------------------------------------------------------------
+# CLI show with hydration instructions
+# ---------------------------------------------------------------------------
+
+
+def test_show_displays_hydration_instructions_when_hydration_yaml_exists(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph show displays hydration instructions when the registry has hydration.yaml."""
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(tmp_path / "global"))
+    registry_dir = tmp_path / "registry"
+    runner.invoke(app, ["registry", "init", "--pool-home", str(registry_dir),
+                        "--id", "hreg", "--context", "Hydration test registry"])
+    runner.invoke(app, ["pool", "init", "--registry", "hreg",
+                        "--name", "hpool", "--context", "Test pool",
+                        "--cwd", str(registry_dir)])
+    pool = registry_dir / "hpool"
+    runner.invoke(app, [
+        "add", "-c", "Design doc", "--ct", "gdoc",
+        "--meta", "url=https://docs.google.com/doc/d/abc",
+        "--pool", str(pool), "--creator", "chase@example.com",
+    ])
+    # Write hydration.yaml to the registry root
+    (registry_dir / "hydration.yaml").write_text(
+        "types:\n"
+        "  gdoc:\n"
+        "    provider: google-docs-mcp\n"
+        "    instructions: Use the Google Docs MCP server to fetch content.\n"
+    )
+    node_id = next((pool / "snapshots").glob("*.md")).stem
+    result = runner.invoke(app, ["show", node_id, "--pool", str(pool)])
+    assert result.exit_code == 0
+    assert "hydration" in result.output.lower()
+    assert "Google Docs MCP" in result.output
+
+
+def test_show_works_without_hydration_yaml(tmp_path: Path) -> None:
+    """alph show works unchanged when no hydration.yaml exists."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, [
+        "add", "-c", "Plain note",
+        "--pool", str(pool), "--creator", "chase@example.com",
+    ])
+    node_id = next((pool / "snapshots").glob("*.md")).stem
+    result = runner.invoke(app, ["show", node_id, "--pool", str(pool)])
+    assert result.exit_code == 0
+    assert "hydration" not in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# CLI validate with registry types
+# ---------------------------------------------------------------------------
+
+
+def test_validate_passes_custom_type_with_hydration_yaml(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph validate passes a custom content_type when hydration.yaml declares it."""
+    monkeypatch.setenv("ALPH_CONFIG_DIR", str(tmp_path / "global"))
+    registry_dir = tmp_path / "registry"
+    runner.invoke(app, ["registry", "init", "--pool-home", str(registry_dir),
+                        "--id", "vreg", "--context", "Validate test registry"])
+    runner.invoke(app, ["pool", "init", "--registry", "vreg",
+                        "--name", "vpool", "--context", "Test pool",
+                        "--cwd", str(registry_dir)])
+    pool = registry_dir / "vpool"
+    # Manually write a node with a custom content_type
+    node_file = pool / "live" / "custom123abc.md"
+    node_file.write_text(
+        "---\n"
+        "schema_version: '1'\n"
+        "id: custom123abc\n"
+        "timestamp: '2026-03-16T00:00:00Z'\n"
+        "source: cli\n"
+        "node_type: live\n"
+        "context: Custom widget\n"
+        "creator: chase@example.com\n"
+        "content_type: custom_widget\n"
+        "---\n"
+    )
+    # Without hydration.yaml, validation fails
+    result = runner.invoke(app, ["validate", "--pool", str(pool)])
+    assert result.exit_code == 1
+    assert "custom_widget" in result.output
+
+    # Add hydration.yaml declaring the custom type
+    (registry_dir / "hydration.yaml").write_text(
+        "types:\n"
+        "  custom_widget:\n"
+        "    provider: widget-mcp\n"
+        "    instructions: Fetch via widget API.\n"
+    )
+    result = runner.invoke(app, ["validate", "--pool", str(pool)])
+    assert result.exit_code == 0
+
+
 def test_completions_install_writes_file_and_prints_path(
     tmp_path: Path, monkeypatch,  # type: ignore[no-untyped-def]
 ) -> None:

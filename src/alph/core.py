@@ -175,6 +175,27 @@ class NodeDetail:
     related_to: list[str] = field(default_factory=list)
     meta: dict[str, object] = field(default_factory=dict)
     content_type: str = "text"
+    hydration_instructions: str = ""
+
+
+@dataclass(frozen=True)
+class HydrationTypeConfig:
+    """Resolution config for a single content type within a registry."""
+
+    provider: str = ""
+    base_url: str = ""
+    instructions: str = ""
+
+
+@dataclass(frozen=True)
+class HydrationConfig:
+    """Registry-scoped hydration configuration loaded from hydration.yaml."""
+
+    types: dict[str, HydrationTypeConfig] = field(default_factory=dict)
+
+    @property
+    def declared_types(self) -> frozenset[str]:
+        return frozenset(self.types)
 
 
 @dataclass(frozen=True)
@@ -396,11 +417,18 @@ def extract_frontmatter(text: str) -> dict[str, object] | None:
 # ---------------------------------------------------------------------------
 
 
-def validate_node(frontmatter: dict[str, object]) -> ValidationResult:
+def validate_node(
+    frontmatter: dict[str, object],
+    *,
+    registry_types: frozenset[str] | None = None,
+) -> ValidationResult:
     """Validate a node's frontmatter against the v1 schema.
 
     Args:
         frontmatter: Parsed YAML frontmatter from a node file.
+        registry_types: Content types declared by the registry's hydration.yaml.
+            Types in this set but not in the built-in set are accepted without
+            meta validation.
 
     Returns:
         ValidationResult with valid=True and empty errors if compliant,
@@ -431,21 +459,22 @@ def validate_node(frontmatter: dict[str, object]) -> ValidationResult:
 
     if "content_type" in frontmatter:
         ct = frontmatter["content_type"]
-        if ct not in _VALID_CONTENT_TYPES:
+        _all_valid = _VALID_CONTENT_TYPES | (registry_types or frozenset())
+        if ct not in _all_valid:
             errors.append(
                 f"invalid content_type: '{ct}'"
                 f" (valid values: {', '.join(sorted(_VALID_CONTENT_TYPES))})"
             )
-        else:
+        elif ct in _VALID_CONTENT_TYPES:
             meta = frontmatter.get("meta") or {}
             if isinstance(meta, dict):
                 if ct == "slack":
-                    # requires url OR (channel + thread_ts)
+                    # requires url OR channel (thread_ts is optional — omitting it means the whole channel)
                     has_url = "url" in meta
-                    has_channel_ts = "channel" in meta and "thread_ts" in meta
-                    if not has_url and not has_channel_ts:
+                    has_channel = "channel" in meta
+                    if not has_url and not has_channel:
                         errors.append(
-                            "content_type 'slack' requires meta.url OR (meta.channel + meta.thread_ts)"
+                            "content_type 'slack' requires meta.url OR meta.channel"
                         )
                 elif isinstance(ct, str) and ct in _CONTENT_TYPE_REQUIRED_META:
                     for field in _CONTENT_TYPE_REQUIRED_META[ct]:
@@ -661,6 +690,86 @@ def load_config(
         defaults_reminder=bool(merged.get("defaults_reminder", True)),
         registries=accumulated_registries,
     )
+
+
+# ---------------------------------------------------------------------------
+# Hydration config
+# ---------------------------------------------------------------------------
+
+
+def load_hydration_config(registry_root: Path) -> HydrationConfig:
+    """Load hydration.yaml from a registry root directory.
+
+    Args:
+        registry_root: Path to the registry root (contains hydration.yaml).
+
+    Returns:
+        HydrationConfig with parsed types, or empty config if file is missing.
+    """
+    hydration_file = registry_root / "hydration.yaml"
+    if not hydration_file.exists():
+        return HydrationConfig()
+    data = yaml.safe_load(hydration_file.read_text())
+    if not isinstance(data, dict):
+        return HydrationConfig()
+    raw_types = data.get("types")
+    if not isinstance(raw_types, dict):
+        return HydrationConfig()
+    types: dict[str, HydrationTypeConfig] = {}
+    for name, entry in raw_types.items():
+        if isinstance(entry, dict):
+            types[str(name)] = HydrationTypeConfig(
+                provider=str(entry.get("provider", "")),
+                base_url=str(entry.get("base_url", "")),
+                instructions=str(entry.get("instructions", "")),
+            )
+    return HydrationConfig(types=types)
+
+
+def find_registry_for_pool(
+    pool_path: Path, cfg: AlphConfig,
+) -> tuple[str, RegistryEntry] | None:
+    """Find the registry entry that owns a pool path.
+
+    Iterates configured registries. For local registries, checks if pool_path
+    is under the registry's pool_home. For remote RW registries with a
+    clone_path, checks if pool_path is under the clone location. Returns the
+    most-specific match (longest prefix).
+
+    Args:
+        pool_path: Absolute path to the pool directory.
+        cfg: Merged AlphConfig with registry definitions.
+
+    Returns:
+        Tuple of (registry_id, RegistryEntry) for the best match, or None.
+    """
+    best: tuple[str, RegistryEntry] | None = None
+    best_len = -1
+    resolved_pool = pool_path.resolve()
+    for reg_id, entry in cfg.registries.items():
+        # Check local pool_home
+        if not is_remote_registry(entry.pool_home):
+            try:
+                home = Path(entry.pool_home).resolve()
+                if resolved_pool == home or home in resolved_pool.parents:
+                    prefix_len = len(str(home))
+                    if prefix_len > best_len:
+                        best = (reg_id, entry)
+                        best_len = prefix_len
+            except (ValueError, OSError):
+                continue
+        # Check clone_path for remote RW registries
+        if entry.clone_path:
+            try:
+                clone = Path(entry.clone_path).resolve()
+                if resolved_pool == clone or clone in resolved_pool.parents:
+                    prefix_len = len(str(clone))
+                    if prefix_len > best_len:
+                        best = (reg_id, entry)
+                        best_len = prefix_len
+            except (ValueError, OSError):
+                continue
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -1675,12 +1784,20 @@ def list_nodes(
     return summaries
 
 
-def show_node(pool_path: Path, node_id: str) -> NodeDetail | None:
+def show_node(
+    pool_path: Path,
+    node_id: str,
+    *,
+    hydration: HydrationConfig | None = None,
+) -> NodeDetail | None:
     """Return the full content of a node by ID.
 
     Args:
         pool_path: Root directory of the pool.
         node_id: 12-character node ID to look up.
+        hydration: Optional registry hydration config. When provided and the
+            node's content_type matches a declared type, populates
+            hydration_instructions.
 
     Returns:
         NodeDetail with all frontmatter fields and body, or None if not found.
@@ -1698,6 +1815,10 @@ def show_node(pool_path: Path, node_id: str) -> NodeDetail | None:
     tags = frontmatter.get("tags", [])
     related_to = frontmatter.get("related_to", [])
     meta = frontmatter.get("meta", {})
+    ct = str(frontmatter.get("content_type", "text"))
+    instructions = ""
+    if hydration and ct in hydration.types:
+        instructions = hydration.types[ct].instructions
     return NodeDetail(
         node_id=node_id,
         context=str(frontmatter.get("context", "")),
@@ -1709,7 +1830,8 @@ def show_node(pool_path: Path, node_id: str) -> NodeDetail | None:
         tags=[str(t) for t in tags] if isinstance(tags, list) else [],
         related_to=[str(r) for r in related_to] if isinstance(related_to, list) else [],
         meta=dict(meta) if isinstance(meta, dict) else {},
-        content_type=str(frontmatter.get("content_type", "text")),
+        content_type=ct,
+        hydration_instructions=instructions,
     )
 
 
