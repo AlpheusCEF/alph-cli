@@ -2214,6 +2214,7 @@ def barrel_export_cmd(
 
 _SKILL_NAME = "context-architect"
 _SKILL_TARGET_DIR = Path.home() / ".claude" / "skills" / _SKILL_NAME
+_CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 
 def _find_skill_source() -> Path | None:
@@ -2244,11 +2245,39 @@ def _find_skill_source() -> Path | None:
     return None
 
 
+def _configure_mcp_server() -> str:
+    """Add alph MCP server to Claude settings if not already present.
+
+    Returns a status message.
+    """
+    settings_path = _CLAUDE_SETTINGS_PATH
+    settings: dict[str, object] = {}
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            settings = {}
+
+    mcp_servers_raw = settings.get("mcpServers", {})
+    mcp_servers: dict[str, object] = mcp_servers_raw if isinstance(mcp_servers_raw, dict) else {}
+    if not isinstance(mcp_servers, dict):
+        mcp_servers = {}
+
+    if "alph" in mcp_servers:
+        return "MCP: alph server already configured (not modified)."
+
+    mcp_servers["alph"] = {"command": "alph-mcp"}
+    settings["mcpServers"] = mcp_servers
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+    return "MCP: configured alph server in Claude settings."
+
+
 @skill_app.command("install")
 def skill_install(
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Install the context-architect skill as a symlink to the alph-managed copy."""
+    """Install the context-architect skill and configure MCP server."""
     _apply_verbose(verbose)
     source = _find_skill_source()
     if source is None:
@@ -2274,36 +2303,55 @@ def skill_install(
         target.unlink()
 
     target.symlink_to(source)
-    console.print(f"Installed: {target} -> {source}")
+    console.print(f"Skill: {target} -> {source}")
+
+    # Configure MCP server
+    mcp_msg = _configure_mcp_server()
+    console.print(mcp_msg)
 
 
 @skill_app.command("status")
 def skill_status(
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Check if the context-architect skill is installed and current."""
+    """Check if the context-architect skill and MCP server are configured."""
     _apply_verbose(verbose)
     target = _SKILL_TARGET_DIR / "SKILL.md"
     source = _find_skill_source()
 
+    # Skill status
     if not target.exists():
-        console.print("[yellow]Not installed.[/yellow] Run: alph skill install")
-        return
-
-    if target.is_symlink():
+        console.print("[yellow]Skill: not installed.[/yellow] Run: alph skill install")
+    elif target.is_symlink():
         link_target = target.resolve()
         if source and link_target == source.resolve():
-            console.print(f"[green]Installed (symlink, auto-updates).[/green]\n  {target} -> {link_target}")
+            console.print(f"[green]Skill: installed (symlink, auto-updates).[/green]\n  {target} -> {link_target}")
         else:
             console.print(
-                f"[yellow]Installed (symlink, stale target).[/yellow]\n"
+                f"[yellow]Skill: installed (symlink, stale target).[/yellow]\n"
                 f"  Points to: {link_target}\n"
                 f"  Expected:  {source}\n"
                 f"  Run: alph skill install"
             )
     else:
         console.print(
-            f"[yellow]Installed (copy, may be stale).[/yellow]\n"
+            f"[yellow]Skill: installed (copy, may be stale).[/yellow]\n"
             f"  {target} is a file, not a symlink.\n"
             f"  Run: alph skill install  (to replace with auto-updating symlink)"
         )
+
+    # MCP status
+    settings_path = _CLAUDE_SETTINGS_PATH
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text())
+            mcp_servers = settings.get("mcpServers", {})
+            if isinstance(mcp_servers, dict) and "alph" in mcp_servers:
+                cmd = mcp_servers["alph"].get("command", "?")
+                console.print(f"[green]MCP: configured.[/green] command: {cmd}")
+            else:
+                console.print("[yellow]MCP: not configured.[/yellow] Run: alph skill install")
+        except (json.JSONDecodeError, OSError):
+            console.print("[yellow]MCP: could not read settings.[/yellow]")
+    else:
+        console.print("[yellow]MCP: not configured.[/yellow] Run: alph skill install")
