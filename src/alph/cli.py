@@ -23,6 +23,14 @@ from alph.core import (
     HydrationConfig,
     PoolSummary,
     RegistryEntry,
+    barrel_check,
+    barrel_export,
+    barrel_flush,
+    barrel_invalidate,
+    barrel_mark_read,
+    barrel_new,
+    barrel_status,
+    barrel_write,
     check_git_state,
     collect_registries,
     create_node,
@@ -35,6 +43,7 @@ from alph.core import (
     list_config_paths,
     list_nodes,
     list_pools,
+    load_barrel_config,
     load_config,
     load_hydration_config,
     parse_remote_registry,
@@ -61,9 +70,13 @@ registry_app = typer.Typer(help="Registry commands.", invoke_without_command=Tru
 pool_app = typer.Typer(help="Pool commands.", invoke_without_command=True, context_settings=_help_settings)
 config_app = typer.Typer(help="Config file commands.", invoke_without_command=True, context_settings=_help_settings)
 completions_app = typer.Typer(help="Shell tab completion commands.", context_settings=_help_settings)
+barrel_app = typer.Typer(help="Barrel (hydration cache) commands.", invoke_without_command=True, context_settings=_help_settings)
 app.add_typer(registry_app, name="registry")
 app.add_typer(registry_app, name="reg", hidden=True)
 app.add_typer(pool_app, name="pool")
+app.add_typer(barrel_app, name="barrel")
+app.add_typer(barrel_app, name="bar", hidden=True)
+app.add_typer(barrel_app, name="b", hidden=True)
 app.add_typer(config_app, name="config")
 app.add_typer(completions_app, name="completions")
 
@@ -1970,3 +1983,224 @@ def completions_install(
         )
     elif resolved == "fish":
         console.print("\n[dim]Fish loads completions automatically from this directory.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# Barrel commands
+# ---------------------------------------------------------------------------
+
+
+def _resolve_pool_for_barrel(pool: str | None, cfg: AlphConfig) -> Path:
+    """Resolve pool path for barrel commands using same logic as other commands."""
+    if pool:
+        return Path(pool)
+    resolved = resolve_default_pool(cfg)
+    if not resolved:
+        console.print("[red]error:[/red] no pool specified and no default_pool configured.")
+        raise typer.Exit(1)
+    return resolved
+
+
+def _barrel_ttl_for_node(node_id: str, pool_path: Path, registry_root: Path | None) -> str:
+    """Look up the TTL for a cached node, considering its content_type."""
+    if registry_root is None:
+        return "4h"
+    config = load_barrel_config(registry_root)
+    # Read the barrel entry to get its content_type
+    barrel_file = pool_path / "barrel" / f"{node_id}.md"
+    if barrel_file.exists():
+        fm = extract_frontmatter(barrel_file.read_text())
+        if fm:
+            ct = str(fm.get("content_type", ""))
+            if ct in config.types:
+                return config.types[ct].ttl
+    return config.default_ttl
+
+
+def _find_registry_root(pool_path: Path, cfg: AlphConfig) -> Path | None:
+    """Find the registry root for a pool path."""
+    match = find_registry_for_pool(pool_path, cfg)
+    if match:
+        _, entry = match
+        home = Path(entry.pool_home) if not is_remote_registry(entry.pool_home) else None
+        if entry.clone_path:
+            home = Path(entry.clone_path)
+        return home
+    # Walk up from pool_path looking for hydration.yaml
+    for parent in [pool_path.parent, pool_path.parent.parent]:
+        if (parent / "hydration.yaml").exists():
+            return parent
+    return None
+
+
+@barrel_app.callback()
+def _barrel_default(ctx: typer.Context) -> None:
+    """Barrel (hydration cache) commands. Defaults to 'status' when no subcommand is given."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(barrel_status_cmd, pool=None, verbose=False)
+
+
+@barrel_app.command("status")
+def barrel_status_cmd(
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Show barrel cache status for a pool."""
+    _apply_verbose(verbose)
+    cfg = _load_cli_config()
+    pool_path = _resolve_pool_for_barrel(pool, cfg)
+    registry_root = _find_registry_root(pool_path, cfg)
+    config = load_barrel_config(registry_root) if registry_root else None
+    default_ttl = config.default_ttl if config else "4h"
+
+    entries = barrel_status(pool_path=pool_path, default_ttl=default_ttl)
+    if not entries:
+        console.print("[dim]No barrel cache entries.[/dim]")
+        return
+
+    table = Table(
+        show_header=True,
+        header_style="bold",
+        row_styles=["", "dim"],
+        width=min(120, _console_width()),
+    )
+    table.add_column("Node ID")
+    table.add_column("Type")
+    table.add_column("Cached At")
+    table.add_column("Age")
+    table.add_column("Status")
+
+    for e in entries:
+        hours = e.age_seconds / 3600
+        age_str = f"{hours:.1f}h" if hours >= 1 else f"{e.age_seconds / 60:.0f}m"
+        style = "green" if e.freshness == "fresh" else "yellow"
+        table.add_row(e.node_id, e.content_type, e.cached_at[:19], age_str, f"[{style}]{e.freshness}[/{style}]")
+
+    console.print(table)
+
+
+@barrel_app.command("check")
+def barrel_check_cmd(
+    node_id: str = typer.Argument(..., help="Node ID to check."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Check freshness of a specific barrel cache entry."""
+    _apply_verbose(verbose)
+    cfg = _load_cli_config()
+    pool_path = _resolve_pool_for_barrel(pool, cfg)
+    registry_root = _find_registry_root(pool_path, cfg)
+    ttl = _barrel_ttl_for_node(node_id, pool_path, registry_root)
+    result = barrel_check(pool_path=pool_path, node_id=node_id, default_ttl=ttl)
+    if result == "missing":
+        console.print(f"{node_id}: [dim]missing[/dim]")
+    elif result == "fresh":
+        console.print(f"{node_id}: [green]fresh[/green] (ttl: {ttl})")
+    else:
+        console.print(f"{node_id}: [yellow]stale[/yellow] (ttl: {ttl})")
+
+
+@barrel_app.command("write")
+def barrel_write_cmd(
+    node_id: str = typer.Argument(..., help="Node ID to cache."),
+    content_type: str = typer.Option(..., "--content-type", "--ct", help="Content type."),
+    content_file: Path = typer.Option(..., "--file", "-f", help="File containing content to cache."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name."),
+    cached_through: str = typer.Option("", "--cached-through", help="Cursor timestamp for delta types."),
+    fetch_mode: str = typer.Option("full", "--fetch-mode", help="full or delta."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Write or update a barrel cache entry from a file."""
+    _apply_verbose(verbose)
+    cfg = _load_cli_config()
+    pool_path = _resolve_pool_for_barrel(pool, cfg)
+    if not content_file.exists():
+        console.print(f"[red]error:[/red] file not found: {content_file}")
+        raise typer.Exit(1)
+    content = content_file.read_text()
+    entry = barrel_write(
+        pool_path=pool_path,
+        node_id=node_id,
+        content_type=content_type,
+        content=content,
+        cached_through=cached_through,
+        fetch_mode=fetch_mode,
+    )
+    console.print(f"Cached {entry.node_id} ({entry.content_type})")
+
+
+@barrel_app.command("invalidate")
+def barrel_invalidate_cmd(
+    node_id: str = typer.Argument(..., help="Node ID to invalidate."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Remove a specific barrel cache entry."""
+    _apply_verbose(verbose)
+    cfg = _load_cli_config()
+    pool_path = _resolve_pool_for_barrel(pool, cfg)
+    removed = barrel_invalidate(pool_path=pool_path, node_id=node_id)
+    if removed:
+        console.print(f"Invalidated {node_id}")
+    else:
+        console.print(f"[dim]{node_id}: not cached[/dim]")
+
+
+@barrel_app.command("flush")
+def barrel_flush_cmd(
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Remove all barrel cache entries in a pool."""
+    _apply_verbose(verbose)
+    cfg = _load_cli_config()
+    pool_path = _resolve_pool_for_barrel(pool, cfg)
+    count = barrel_flush(pool_path=pool_path)
+    console.print(f"Flushed {count} barrel entries.")
+
+
+@barrel_app.command("new")
+def barrel_new_cmd(
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Show barrel entries cached since last read."""
+    _apply_verbose(verbose)
+    cfg = _load_cli_config()
+    pool_path = _resolve_pool_for_barrel(pool, cfg)
+    entries = barrel_new(pool_path=pool_path)
+    if not entries:
+        console.print("[dim]No new entries since last read.[/dim]")
+        return
+    for e in entries:
+        console.print(f"  {e.node_id} ({e.content_type}) — cached {e.cached_at[:19]}")
+
+
+@barrel_app.command("mark-read")
+def barrel_mark_read_cmd(
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Mark all current barrel entries as read."""
+    _apply_verbose(verbose)
+    cfg = _load_cli_config()
+    pool_path = _resolve_pool_for_barrel(pool, cfg)
+    meta = barrel_mark_read(pool_path=pool_path)
+    console.print(f"Marked read at {meta.last_read}")
+
+
+@barrel_app.command("export")
+def barrel_export_cmd(
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name."),
+    fmt: str = typer.Option("md", "--format", "-o", help="Output format: md, json, yaml."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Export all barrel cached content."""
+    _apply_verbose(verbose)
+    cfg = _load_cli_config()
+    pool_path = _resolve_pool_for_barrel(pool, cfg)
+    output = barrel_export(pool_path=pool_path, fmt=fmt)
+    if not output:
+        console.print("[dim]No barrel cache entries to export.[/dim]")
+        return
+    console.print(output)

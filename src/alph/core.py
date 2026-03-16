@@ -6,7 +6,7 @@ import json
 import logging
 import subprocess
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -1833,6 +1833,375 @@ def show_node(
         content_type=ct,
         hydration_instructions=instructions,
     )
+
+
+# ---------------------------------------------------------------------------
+# Barrel — hydration cache
+# ---------------------------------------------------------------------------
+
+_BARREL_DIR = "barrel"
+_BARREL_META_FILE = ".barrel-meta.yaml"
+
+
+@dataclass(frozen=True)
+class BarrelTypeConfig:
+    """Per-content-type barrel config from hydration.yaml."""
+
+    ttl: str = "4h"
+    fetch_mode: str = "full"
+
+
+@dataclass(frozen=True)
+class BarrelConfig:
+    """Registry-scoped barrel configuration from hydration.yaml → barrel."""
+
+    default_ttl: str = "4h"
+    types: dict[str, BarrelTypeConfig] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BarrelEntry:
+    """A cached barrel entry read from disk."""
+
+    node_id: str
+    content_type: str
+    cached_at: str
+    content: str
+    cached_through: str = ""
+    fetch_mode: str = "full"
+
+
+@dataclass(frozen=True)
+class BarrelStatus:
+    """Status of a barrel entry for display."""
+
+    node_id: str
+    content_type: str
+    cached_at: str
+    freshness: str  # "fresh" | "stale"
+    age_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
+class BarrelMeta:
+    """Pool-level barrel metadata (.barrel-meta.yaml)."""
+
+    last_read: str | None = None
+
+
+def _parse_ttl(ttl: str) -> timedelta | None:
+    """Parse a TTL string like '4h', '30m', '1d', 'forever' into a timedelta.
+
+    Returns None for 'forever' (never expires).
+    """
+    if ttl == "forever":
+        return None
+    ttl = ttl.strip()
+    if ttl.endswith("h"):
+        return timedelta(hours=float(ttl[:-1]))
+    if ttl.endswith("m"):
+        return timedelta(minutes=float(ttl[:-1]))
+    if ttl.endswith("d"):
+        return timedelta(days=float(ttl[:-1]))
+    # Default: treat as hours
+    try:
+        return timedelta(hours=float(ttl))
+    except ValueError:
+        return timedelta(hours=4)
+
+
+def _read_barrel_entry(barrel_file: Path) -> BarrelEntry | None:
+    """Read and parse a barrel cache file."""
+    if not barrel_file.exists():
+        return None
+    text = barrel_file.read_text()
+    fm = extract_frontmatter(text)
+    if not fm:
+        return None
+    # Extract body: everything after the closing ---
+    parts = text.split("---", 2)
+    body = parts[2].lstrip("\n") if len(parts) > 2 else ""
+    return BarrelEntry(
+        node_id=str(fm.get("node_id", "")),
+        content_type=str(fm.get("content_type", "")),
+        cached_at=str(fm.get("cached_at", "")),
+        content=body,
+        cached_through=str(fm.get("cached_through", "")),
+        fetch_mode=str(fm.get("fetch_mode", "full")),
+    )
+
+
+def _load_barrel_meta(pool_path: Path) -> BarrelMeta:
+    """Load pool-level barrel metadata."""
+    meta_file = pool_path / _BARREL_DIR / _BARREL_META_FILE
+    if not meta_file.exists():
+        return BarrelMeta()
+    data = yaml.safe_load(meta_file.read_text())
+    if not isinstance(data, dict):
+        return BarrelMeta()
+    return BarrelMeta(last_read=data.get("last_read"))
+
+
+def _save_barrel_meta(pool_path: Path, meta: BarrelMeta) -> None:
+    """Save pool-level barrel metadata."""
+    barrel_dir = pool_path / _BARREL_DIR
+    barrel_dir.mkdir(exist_ok=True)
+    meta_file = barrel_dir / _BARREL_META_FILE
+    meta_file.write_text(yaml.dump({"last_read": meta.last_read}, default_flow_style=False))
+
+
+def load_barrel_config(registry_root: Path) -> BarrelConfig:
+    """Load barrel config from hydration.yaml → barrel section.
+
+    Returns default config if missing or malformed.
+    """
+    hydration_file = registry_root / "hydration.yaml"
+    if not hydration_file.exists():
+        return BarrelConfig()
+    data = yaml.safe_load(hydration_file.read_text())
+    if not isinstance(data, dict):
+        return BarrelConfig()
+    raw_barrel = data.get("barrel")
+    if not isinstance(raw_barrel, dict):
+        return BarrelConfig()
+    types: dict[str, BarrelTypeConfig] = {}
+    raw_types = raw_barrel.get("types")
+    if isinstance(raw_types, dict):
+        for name, entry in raw_types.items():
+            if isinstance(entry, dict):
+                types[str(name)] = BarrelTypeConfig(
+                    ttl=str(entry.get("ttl", "4h")),
+                    fetch_mode=str(entry.get("fetch_mode", "full")),
+                )
+    return BarrelConfig(
+        default_ttl=str(raw_barrel.get("default_ttl", "4h")),
+        types=types,
+    )
+
+
+def barrel_write(
+    *,
+    pool_path: Path,
+    node_id: str,
+    content_type: str,
+    content: str,
+    cached_through: str = "",
+    fetch_mode: str = "full",
+) -> BarrelEntry:
+    """Write or overwrite a barrel cache entry with standardized frontmatter.
+
+    Creates the barrel/ directory if it doesn't exist.
+
+    Returns:
+        The BarrelEntry that was written.
+    """
+    barrel_dir = pool_path / _BARREL_DIR
+    barrel_dir.mkdir(exist_ok=True)
+    now = datetime.now(UTC).isoformat()
+    frontmatter = {
+        "node_id": node_id,
+        "content_type": content_type,
+        "cached_at": now,
+        "cached_through": cached_through or now,
+        "fetch_mode": fetch_mode,
+    }
+    barrel_file = barrel_dir / f"{node_id}.md"
+    fm_text = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)
+    barrel_file.write_text(f"---\n{fm_text}---\n{content}")
+    return BarrelEntry(
+        node_id=node_id,
+        content_type=content_type,
+        cached_at=now,
+        content=content,
+        cached_through=cached_through or now,
+        fetch_mode=fetch_mode,
+    )
+
+
+def barrel_check(
+    *,
+    pool_path: Path,
+    node_id: str,
+    default_ttl: str = "4h",
+) -> str:
+    """Check freshness of a barrel cache entry.
+
+    Returns:
+        'fresh', 'stale', or 'missing'.
+    """
+    barrel_file = pool_path / _BARREL_DIR / f"{node_id}.md"
+    entry = _read_barrel_entry(barrel_file)
+    if entry is None:
+        return "missing"
+    ttl_delta = _parse_ttl(default_ttl)
+    if ttl_delta is None:
+        return "fresh"  # forever
+    try:
+        cached_time = datetime.fromisoformat(entry.cached_at)
+        age = datetime.now(UTC) - cached_time
+        if age > ttl_delta:
+            return "stale"
+        return "fresh"
+    except (ValueError, TypeError):
+        return "stale"
+
+
+def barrel_status(
+    *,
+    pool_path: Path,
+    default_ttl: str = "4h",
+) -> list[BarrelStatus]:
+    """List all barrel entries with their freshness status.
+
+    Returns:
+        List of BarrelStatus objects, one per cached entry.
+    """
+    barrel_dir = pool_path / _BARREL_DIR
+    if not barrel_dir.exists():
+        return []
+    results: list[BarrelStatus] = []
+    for barrel_file in sorted(barrel_dir.glob("*.md")):
+        entry = _read_barrel_entry(barrel_file)
+        if entry is None:
+            continue
+        freshness = barrel_check(pool_path=pool_path, node_id=entry.node_id, default_ttl=default_ttl)
+        try:
+            cached_time = datetime.fromisoformat(entry.cached_at)
+            age = (datetime.now(UTC) - cached_time).total_seconds()
+        except (ValueError, TypeError):
+            age = 0.0
+        results.append(BarrelStatus(
+            node_id=entry.node_id,
+            content_type=entry.content_type,
+            cached_at=entry.cached_at,
+            freshness=freshness,
+            age_seconds=age,
+        ))
+    return results
+
+
+def barrel_invalidate(*, pool_path: Path, node_id: str) -> bool:
+    """Remove a specific barrel cache entry.
+
+    Returns:
+        True if the entry was removed, False if it didn't exist.
+    """
+    barrel_file = pool_path / _BARREL_DIR / f"{node_id}.md"
+    if barrel_file.exists():
+        barrel_file.unlink()
+        return True
+    return False
+
+
+def barrel_flush(*, pool_path: Path) -> int:
+    """Remove all barrel cache entries in a pool, preserving .barrel-meta.yaml.
+
+    Returns:
+        Number of entries removed.
+    """
+    barrel_dir = pool_path / _BARREL_DIR
+    if not barrel_dir.exists():
+        return 0
+    count = 0
+    for barrel_file in barrel_dir.glob("*.md"):
+        barrel_file.unlink()
+        count += 1
+    return count
+
+
+def barrel_mark_read(*, pool_path: Path) -> BarrelMeta:
+    """Update the last_read timestamp to now.
+
+    Returns:
+        The updated BarrelMeta.
+    """
+    now = datetime.now(UTC).isoformat()
+    meta = BarrelMeta(last_read=now)
+    _save_barrel_meta(pool_path, meta)
+    return meta
+
+
+def barrel_new(*, pool_path: Path) -> list[BarrelEntry]:
+    """Return barrel entries newer than the last_read timestamp.
+
+    If no last_read exists, returns all entries (everything is "new").
+
+    Returns:
+        List of BarrelEntry objects cached since last_read.
+    """
+    meta = _load_barrel_meta(pool_path)
+    barrel_dir = pool_path / _BARREL_DIR
+    if not barrel_dir.exists():
+        return []
+    entries: list[BarrelEntry] = []
+    for barrel_file in sorted(barrel_dir.glob("*.md")):
+        entry = _read_barrel_entry(barrel_file)
+        if entry is None:
+            continue
+        if meta.last_read is None:
+            entries.append(entry)
+        else:
+            try:
+                cached_time = datetime.fromisoformat(entry.cached_at)
+                last_read_time = datetime.fromisoformat(meta.last_read)
+                if cached_time > last_read_time:
+                    entries.append(entry)
+            except (ValueError, TypeError):
+                entries.append(entry)
+    return entries
+
+
+def barrel_export(*, pool_path: Path, fmt: str = "md") -> str:
+    """Export all barrel cached content.
+
+    Args:
+        pool_path: Root directory of the pool.
+        fmt: Output format — 'md', 'json', or 'yaml'.
+
+    Returns:
+        Formatted string of all cached content.
+    """
+    barrel_dir = pool_path / _BARREL_DIR
+    if not barrel_dir.exists():
+        return ""
+    entries: list[BarrelEntry] = []
+    for barrel_file in sorted(barrel_dir.glob("*.md")):
+        entry = _read_barrel_entry(barrel_file)
+        if entry is not None:
+            entries.append(entry)
+    if not entries:
+        return ""
+    if fmt == "json":
+        return json.dumps(
+            [
+                {
+                    "node_id": e.node_id,
+                    "content_type": e.content_type,
+                    "cached_at": e.cached_at,
+                    "content": e.content,
+                }
+                for e in entries
+            ],
+            indent=2,
+        )
+    if fmt == "yaml":
+        return yaml.dump(
+            [
+                {
+                    "node_id": e.node_id,
+                    "content_type": e.content_type,
+                    "cached_at": e.cached_at,
+                    "content": e.content,
+                }
+                for e in entries
+            ],
+            default_flow_style=False,
+        )
+    # Default: markdown
+    parts: list[str] = []
+    for e in entries:
+        parts.append(f"## {e.node_id} ({e.content_type})\n\n{e.content}")
+    return "\n\n---\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
