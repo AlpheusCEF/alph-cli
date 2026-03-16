@@ -1,5 +1,6 @@
 """AlpheusCEF core logic. No framework dependencies. All business logic lives here."""
 
+import getpass
 import hashlib
 import io
 import json
@@ -681,8 +682,15 @@ def load_config(
     if overrides:
         merged.update(overrides)
 
+    creator = str(merged.get("creator", ""))
+    if not creator:
+        try:
+            creator = getpass.getuser()
+        except OSError:
+            creator = ""
+
     return AlphConfig(
-        creator=str(merged.get("creator", "")),
+        creator=creator,
         auto_commit=bool(merged.get("auto_commit", False)),
         default_registry=str(merged.get("default_registry", "")),
         default_pool=str(merged.get("default_pool", "")),

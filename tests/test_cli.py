@@ -670,13 +670,20 @@ def test_list_uses_config_default_pool_when_pool_flag_omitted(tmp_path: Path, mo
     assert "Config-default-pool node" in result.output
 
 
-def test_add_errors_when_no_creator_and_no_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """alph add exits non-zero when --creator is omitted and no config creator is set."""
+def test_add_uses_system_username_when_no_creator_configured(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """alph add uses the system username as creator when no config creator is set."""
     global_dir = tmp_path / "empty-global"
     monkeypatch.setenv("ALPH_CONFIG_DIR", str(global_dir))
     pool = _init_registry_and_pool(tmp_path)
-    result = runner.invoke(app, ["add", "-c", "No creator node", "--pool", str(pool)])
-    assert result.exit_code != 0
+    result = runner.invoke(app, ["add", "-c", "Auto creator node", "--pool", str(pool)])
+    assert result.exit_code == 0
+    # The node should have been created with the system username
+    import getpass
+    expected_creator = getpass.getuser()
+    md_files = list((pool / "snapshots").glob("*.md"))
+    assert len(md_files) >= 1
+    content = md_files[-1].read_text()
+    assert f"creator: {expected_creator}" in content
 
 
 # ---------------------------------------------------------------------------

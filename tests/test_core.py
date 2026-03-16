@@ -559,6 +559,17 @@ def test_load_config_reads_global_creator(tmp_path: Path) -> None:
     assert config.creator == "chase@example.com"
 
 
+def test_load_config_falls_back_to_system_username_when_no_creator(tmp_path: Path) -> None:
+    """load_config uses the system username when creator is not set in any config."""
+    global_dir = tmp_path / "global"
+    global_dir.mkdir(parents=True)
+    (global_dir / "config.yaml").write_text("{}\n")
+    config = load_config(global_config_dir=global_dir)
+    # Should be a non-empty string from the OS
+    assert config.creator != ""
+    assert isinstance(config.creator, str)
+
+
 def test_load_config_cwd_local_overrides_global(tmp_path: Path) -> None:
     """A config.yaml in cwd overrides global config for the same key."""
     global_dir = tmp_path / "global"
