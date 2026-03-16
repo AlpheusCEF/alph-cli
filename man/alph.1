@@ -66,6 +66,21 @@ Optional Markdown body.
 .TP
 .BI \-\-status " TEXT"
 \fBactive\fR (default), \fBarchived\fR, or \fBsuppressed\fR.
+.TP
+.BI \-\-ct ", " \-\-content\-type " TEXT"
+Content type: \fBtext\fR (default), \fBgdoc\fR, \fBslack\fR, \fBjira\fR,
+\fBconfluence\fR, \fBemail\fR, \fBimage\fR, \fBfigma\fR, \fBtask\fR.
+Determines required \fBmeta\fR fields (e.g. \fBgdoc\fR requires \fBmeta.url\fR).
+.TP
+.BI \-\-tags " TEXT"
+Add a tag. Repeatable (e.g. \fB\-\-tags urgent \-\-tags review\fR).
+.TP
+.BI \-\-meta " KEY=VALUE"
+Add a metadata key-value pair. Repeatable
+(e.g. \fB\-\-meta url=https://... \-\-meta priority=high\fR).
+.TP
+.BI \-\-related\-to " TEXT"
+Add a related node ID. Repeatable.
 .RE
 .TP
 .B alph list
@@ -110,6 +125,38 @@ Pool path or name.
 .TP
 .B \-\-pull
 Pull latest changes before validating (RW clones only).
+.RE
+.TP
+.B alph update \fINODE_ID\fR
+Modify an existing node's frontmatter and/or body.
+.RS
+.TP
+.BR \-p ", " \-\-pool " " \fITEXT\fR
+Pool path or name.
+.TP
+.BI \-\-status " TEXT"
+New status: \fBactive\fR, \fBarchived\fR, or \fBsuppressed\fR.
+.TP
+.BI \-\-tags\-add " TEXT"
+Tags to merge into existing list. Repeatable.
+.TP
+.BI \-\-tags\-remove " TEXT"
+Tags to remove from existing list. Repeatable.
+.TP
+.BI \-\-meta " KEY=VALUE"
+Metadata key-value pairs to merge. Repeatable.
+.TP
+.BI \-\-content " TEXT"
+New body text (replaces entire body).
+.TP
+.BI \-\-context " TEXT"
+New context description.
+.TP
+.BI \-\-ct ", " \-\-content\-type " TEXT"
+New content type.
+.TP
+.BI \-\-related\-add " TEXT"
+Related node IDs to append. Repeatable.
 .RE
 .TP
 .B alph defaults
@@ -471,6 +518,14 @@ Human/LLM-readable description of this specific node.
 .B creator
 Email of the node creator.
 .TP
+.B content_type
+Content format: \fBtext\fR (default), \fBgdoc\fR, \fBslack\fR, \fBjira\fR,
+\fBconfluence\fR, \fBemail\fR, \fBimage\fR, \fBfigma\fR, \fBtask\fR.
+Registries can declare additional types via \fBhydration.yaml\fR.
+Determines which \fBmeta\fR fields are required (e.g. \fBgdoc\fR requires
+\fBmeta.url\fR, \fBjira\fR requires \fBmeta.url\fR + \fBmeta.issue_key\fR,
+\fBslack\fR requires \fBmeta.url\fR or \fBmeta.channel\fR).
+.TP
 .B status
 \fBactive\fR (default), \fBarchived\fR, or \fBsuppressed\fR.
 .TP
@@ -484,9 +539,46 @@ and cross-registry references (\fIregistry::pool::node_id\fR).
 .TP
 .B meta
 Optional metadata dictionary.
-Live nodes use \fBmeta.provider\fR and \fBmeta.resolves_to\fR
-(\fBsingle\fR or \fBcollection\fR).
+Content-type-specific fields: \fBurl\fR, \fBissue_key\fR, \fBchannel\fR,
+\fBthread_ts\fR, \fBfrom\fR, \fBsubject\fR, etc.
+Required fields are enforced by \fBvalidate\fR based on \fBcontent_type\fR.
 .RE
+.SH HYDRATION
+Live nodes point at external resources but carry no content.
+.B Hydration
+is the process of resolving a live node to its current content.
+This is registry-scoped: the same content type may require different auth,
+workspace, or MCP server depending on which registry owns the node.
+.PP
+Place a \fBhydration.yaml\fR file at the registry root (alongside pool directories):
+.PP
+.RS
+.nf
+types:
+  gdoc:
+    provider: google-docs-mcp
+    instructions: "Use the Google Docs MCP server. URL is in meta.url."
+  jira:
+    provider: atlassian-mcp
+    base_url: https://mycompany.atlassian.net
+    instructions: "Use the Atlassian MCP. Issue key is in meta.issue_key."
+  custom_widget:
+    provider: widget-mcp
+    instructions: "Fetch via the widget API."
+.fi
+.RE
+.PP
+Effects:
+.IP \(bu 2
+\fBalph show\fR displays a \fBhydration:\fR line with the instructions for matching content types.
+.IP \(bu 2
+\fBalph validate\fR accepts custom content types declared in \fBhydration.yaml\fR without meta validation.
+.IP \(bu 2
+The MCP tool \fBshow_pool_node\fR includes \fBhydration_instructions\fR in its response, guiding
+LLMs on how to fetch the live content.
+.PP
+A registry without \fBhydration.yaml\fR works normally \(em nodes still carry
+\fBmeta.url\fR and other fields for manual or generic resolution.
 .SH ENVIRONMENT
 .TP
 .B ALPH_CONFIG_DIR
