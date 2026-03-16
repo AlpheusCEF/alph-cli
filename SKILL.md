@@ -1,6 +1,6 @@
 # Alph — Context Architect Skill
 
-You have access to the **alph** MCP server. Alph is a git-backed context
+You have access to the **alph** MCP server and CLI. Alph is a git-backed context
 engine that stores, retrieves, and validates structured context nodes across
 registries and pools.
 
@@ -10,6 +10,7 @@ registries and pools.
 registry  "All household context"
   pool    "vehicles"       <- a scoped collection of nodes
     node  "Oil change..."  <- a fixed snapshot or live pointer
+    barrel/                <- cached hydrated content (gitignored)
   pool    "appliances"
   pool    "remodeling"
 ```
@@ -31,43 +32,137 @@ use `show_pool_node` only for nodes that are relevant to the query.
 ## Hydration — resolving live nodes
 
 Live nodes point at external resources (Google Docs, Confluence pages, Jira
-tickets, Slack channels). When `show_pool_node` returns a non-empty
-`hydration_instructions` field, follow those instructions to fetch the
-current content using the indicated MCP server or provider.
+tickets, Slack channels). Resolution is registry-scoped — the same content
+type may resolve differently across registries (different auth, workspace,
+MCP servers).
 
-**Workflow:**
-1. `show_pool_node(...)` — read the node
-2. If `hydration_instructions` is present, follow them (they name the MCP
-   server and explain which meta fields to use)
-3. If `hydration_instructions` is empty, fall back to generic patterns:
-   - `meta.url` — try fetching the URL directly
-   - `content_type: gdoc` — use a Google Docs MCP server with `meta.url`
-   - `content_type: confluence` — use an Atlassian MCP server with `meta.url`
-   - `content_type: jira` — use an Atlassian MCP server with `meta.issue_key`
-   - `content_type: slack` — use a Slack MCP server with `meta.channel`
-     (and `meta.thread_ts` if present)
+### Resolution workflow
 
-Hydration is registry-scoped: the same content type may resolve differently
-across registries (different auth, workspace, MCP servers). The instructions
-come from `hydration.yaml` at the registry root.
+1. **Read `hydration.yaml`** at the registry root. It defines:
+   - `types` — how to resolve each content_type (provider, instructions)
+   - `barrel` — cache policy (TTLs, fetch modes)
+   - `context_queries` — how to synthesize answers for different question types
+2. **Check the barrel first** (see Barrel section below).
+3. If not cached or stale, follow the `hydration_instructions` from
+   `show_pool_node` or the `types` instructions in `hydration.yaml`.
+4. After fetching, cache the result in the barrel.
+
+### Fallback patterns (when no hydration.yaml exists)
+
+- `meta.url` — try fetching the URL directly
+- `content_type: gdoc` — use a Google Docs MCP server with `meta.url`
+- `content_type: confluence` — use an Atlassian MCP server with `meta.url`
+- `content_type: jira` — use an Atlassian MCP server with `meta.issue_key`
+- `content_type: slack` — use a Slack MCP server with `meta.channel`
+
+## Barrel — hydration cache
+
+The barrel is a per-pool cache of hydrated live node content. Use the
+`alph barrel` CLI (aliases: `alph bar`, `alph b`) for all cache operations.
+Never manually write barrel files — the CLI ensures consistent frontmatter.
+
+### Barrel CLI commands
+
+```bash
+# Check if a cached entry is fresh, stale, or missing
+alph b check <node_id> --pool <pool_path>
+
+# Cache hydrated content after fetching
+alph b write <node_id> --ct <content_type> --file <path> --pool <pool_path>
+
+# Show cache status for all entries in a pool
+alph b status --pool <pool_path>
+
+# What's changed since last read
+alph b new --pool <pool_path>
+
+# Mark all entries as read (update timeline cursor)
+alph b mark-read --pool <pool_path>
+
+# Remove a specific cache entry (forces re-fetch next time)
+alph b invalidate <node_id> --pool <pool_path>
+
+# Remove all cache entries in a pool
+alph b flush --pool <pool_path>
+
+# Export all cached content
+alph b export --pool <pool_path> --format md|json|yaml
+```
+
+### Hydration workflow with barrel
+
+For each node being hydrated:
+
+1. Run `alph b check <node_id>` to see if it's fresh, stale, or missing.
+2. **Fresh**: Read the barrel file directly (`<pool>/barrel/<node_id>.md`).
+   Do not re-fetch.
+3. **Stale or missing**: Fetch content using `hydration.yaml -> types`
+   instructions (MCP server, CLI tool, etc.). Write fetched content to a
+   temp file, then cache with
+   `alph b write <node_id> --ct <type> --file <temp_file>`.
+4. After all nodes are resolved, run `alph b mark-read` to update the
+   timeline cursor.
+
+### Transparency
+
+Always tell the user what the barrel is doing. Include a cache status line:
+
+    Barrel: 5/6 nodes from cache (fresh), 1/6 re-fetched (slack, stale)
+
+The user can manage the barrel directly:
+- **"barrel status"** — run `alph b status`
+- **"barrel refresh"** — run `alph b flush`, then re-hydrate all nodes
+- **"barrel new"** / **"what's changed"** — run `alph b new`
+
+## Context queries — synthesizing answers
+
+Registries can define `context_queries` in `hydration.yaml` to guide how
+you synthesize answers from hydrated content. Each query has:
+- `matches` — natural language patterns to match against the user's question
+- `instructions` — how to shape the response
+
+When the user asks a high-level question about a pool:
+1. List all nodes in the pool.
+2. Hydrate every node (barrel-first).
+3. Match the question against `context_queries -> matches`.
+4. Follow the matching query's `instructions` to synthesize.
+5. If no query matches, use judgment but still hydrate all nodes first.
+
+## Temporal reasoning
+
+Content from live sources represents a history of evolving decisions, not a
+flat set of facts. When multiple statements address the same topic, **later
+content supersedes earlier content**. Track the arc of decisions and always
+be clear about what is current vs. historical.
+
+## Hydration failures
+
+After attempting to hydrate all nodes, if **any** node failed (MCP server
+unavailable, permission denied, etc.), **stop before synthesizing** and:
+
+1. Show a table of all nodes with hydration status (success/failure/cached).
+2. Warn that proceeding with partial context risks incomplete guidance.
+3. Ask the user whether to proceed or stop.
+
+Do not silently skip failed nodes and present a synthesis as complete.
 
 ## Typical workflows
 
-**Loading context for a question:**
-1. `list_pool_nodes(pool_path=...)` — scan context fields
-2. Identify relevant node IDs from the summaries
-3. `show_pool_node(...)` for each relevant node — read full content
-4. For live nodes with `hydration_instructions`, follow them to fetch current content
-5. Answer the question from loaded content
+**Answering a question about a project:**
+1. Identify the pool from the user's query.
+2. `list_pool_nodes(pool_path=...)` — scan context fields.
+3. Hydrate all nodes using barrel workflow above.
+4. Match against `context_queries` and synthesize.
+5. Cite sources by node ID.
 
 **Capturing new context:**
-1. `list_pool_nodes(...)` — quick check for duplicates
-2. `add_node(pool_path=..., context=..., creator=...)` — create the node
-3. For decisions or notes with body text, pass `content=` as Markdown
-4. For live pointers, set `node_type="live"`, `content_type`, and relevant `meta`
+1. `list_pool_nodes(...)` — quick check for duplicates.
+2. `add_node(pool_path=..., context=..., creator=...)` — create the node.
+3. For decisions or notes with body text, pass `content=` as Markdown.
+4. For live pointers, set `node_type="live"`, `content_type`, and relevant `meta`.
 
 **After bulk operations:**
-1. `validate_pool(pool_path=...)` — confirm schema compliance
+1. `validate_pool(pool_path=...)` — confirm schema compliance.
 
 ## Status and filtering
 
@@ -82,9 +177,8 @@ or `include_statuses=["all"]` to see everything.
 ## Node types
 
 - `snapshot` (alias: `snap`) — content is frozen at creation time, lives in `snapshots/`
-- `live` — pointer to an external resource (Jira, Google Doc, Slack, etc.),
-  lives in `live/`. Content must be fetched from the external system at query
-  time using hydration instructions or meta fields.
+- `live` — pointer to an external resource, lives in `live/`. Content must be
+  fetched at query time using hydration instructions.
 
 ## Content types
 
@@ -110,10 +204,3 @@ meta: {}                  # Source-specific: url, issue_key, channel, etc.
   targeted retrieval.
 - Not a task manager — use live nodes to point at Jira tickets or task systems.
 - Not a database — it's git-backed Markdown. Keep nodes focused and human-readable.
-
-## Install this skill
-
-```bash
-mkdir -p ~/.claude/skills/alph
-cp SKILL.md ~/.claude/skills/alph/SKILL.md
-```
