@@ -42,6 +42,8 @@ from alph.core import (
     load_config,
     load_hydration_config,
     parse_remote_registry,
+    search_barrel,
+    search_nodes,
     show_node,
     update_node,
     validate_node,
@@ -56,7 +58,7 @@ mcp = fastmcp.FastMCP(
     name="alph",
     instructions=(
         "Alpheus Context Engine Framework. Use these tools to create, list, "
-        "show, and validate context nodes in a pool. "
+        "show, search, and validate context nodes in a pool. "
         "A pool is a directory containing snapshots/ (snapshot nodes) and "
         "live/ (live nodes). "
         "Always use tool_list_nodes to discover existing nodes before adding "
@@ -65,7 +67,12 @@ mcp = fastmcp.FastMCP(
         "When show_pool_node returns hydration_instructions, follow those "
         "instructions to resolve the live node content using the indicated "
         "MCP server or provider. "
-        "Use tool_validate_pool to confirm pool health after bulk operations."
+        "Use search_pool_nodes to find nodes by keyword across frontmatter and body. "
+        "Use search_pool_barrel to search cached hydrated content (deep search). "
+        "Use tool_validate_pool to confirm pool health after bulk operations. "
+        "For hydration caching, use the alph barrel CLI (alph b check/write/status/flush). "
+        "Read hydration.yaml at the registry root for resolution config, barrel TTLs, "
+        "and context_queries synthesis patterns."
     ),
 )
 
@@ -521,6 +528,94 @@ def update_pool_node(
         content_type=content_type,
         related_add=related_add,
     )
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Search pool nodes",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
+def search_pool_nodes(
+    pool_path: str,
+    query: str,
+) -> dict[str, Any]:
+    """Search node frontmatter and body text for a keyword.
+
+    Searches context, tags, meta values, and body text across all nodes
+    in the pool (both snapshots/ and live/). Case-insensitive.
+
+    Args:
+        pool_path: Absolute path to the pool directory.
+        query: Search string to match against node content.
+
+    Returns:
+        dict with keys:
+            count: number of matching nodes
+            results: list of matches, each with:
+                node_id, context, content_type, source, matches (excerpts)
+    """
+    with _resolve_pool(pool_path) as pool:
+        results = search_nodes(pool_path=pool, query=query)
+    return {
+        "count": len(results),
+        "results": [
+            {
+                "node_id": r.node_id,
+                "context": r.context,
+                "content_type": r.content_type,
+                "source": r.source,
+                "matches": r.matches[:5],
+            }
+            for r in results
+        ],
+    }
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Search barrel cache",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
+def search_pool_barrel(
+    pool_path: str,
+    query: str,
+) -> dict[str, Any]:
+    """Search barrel cached content for a keyword (deep search).
+
+    Searches the hydrated content cached in the pool's barrel/ directory.
+    Only finds content that has been previously hydrated and cached.
+    Case-insensitive.
+
+    Args:
+        pool_path: Absolute path to the pool directory.
+        query: Search string to match against cached content.
+
+    Returns:
+        dict with keys:
+            count: number of matching barrel entries
+            results: list of matches, each with:
+                node_id, content_type, source, matches (excerpts)
+    """
+    with _resolve_pool(pool_path) as pool:
+        results = search_barrel(pool_path=pool, query=query)
+    return {
+        "count": len(results),
+        "results": [
+            {
+                "node_id": r.node_id,
+                "content_type": r.content_type,
+                "source": r.source,
+                "matches": r.matches[:5],
+            }
+            for r in results
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

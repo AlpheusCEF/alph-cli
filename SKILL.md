@@ -27,7 +27,12 @@ use `show_pool_node` only for nodes that are relevant to the query.
 | `show_pool_node` | Read full content + body of a specific node by ID. |
 | `add_node` | Create a new context node. Idempotent — safe to retry. |
 | `update_pool_node` | Modify an existing node (status, tags, meta, body). |
+| `search_pool_nodes` | Search node frontmatter and body text by keyword. |
+| `search_pool_barrel` | Search barrel cached content by keyword (deep search). |
 | `validate_pool` | Confirm all nodes are schema-compliant. Use after bulk adds. |
+
+For barrel cache management, use the `alph barrel` CLI (`alph b`):
+`check`, `write`, `status`, `flush`, `invalidate`, `new`, `mark-read`, `export`.
 
 ## Hydration — resolving live nodes
 
