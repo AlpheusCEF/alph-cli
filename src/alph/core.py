@@ -2228,6 +2228,130 @@ def barrel_export(*, pool_path: Path, fmt: str = "md") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """A search match across node or barrel content."""
+
+    node_id: str
+    context: str
+    content_type: str
+    matches: list[str]
+    source: str  # "node" or "barrel"
+
+
+def _search_file(path: Path, query: str, source: str) -> SearchResult | None:
+    """Search a single markdown file (node or barrel) for a query string.
+
+    Returns a SearchResult if any match is found, None otherwise.
+    Case-insensitive matching against frontmatter values and body text.
+    """
+    text = path.read_text()
+    query_lower = query.lower()
+
+    fm = extract_frontmatter(text)
+    if not fm:
+        return None
+
+    node_id = str(fm.get("node_id", fm.get("id", "")))
+    context = str(fm.get("context", ""))
+    content_type = str(fm.get("content_type", "text"))
+
+    # Extract body
+    parts = text.split("---", 2)
+    body = parts[2].strip() if len(parts) > 2 else ""
+
+    # Build searchable text from frontmatter fields + body
+    searchable_parts: list[str] = []
+    for key in ("context", "creator", "content_type", "node_type"):
+        val = str(fm.get(key, ""))
+        if val:
+            searchable_parts.append(val)
+    tags = fm.get("tags", [])
+    if isinstance(tags, list):
+        searchable_parts.extend(str(t) for t in tags)
+    meta = fm.get("meta", {})
+    if isinstance(meta, dict):
+        for v in meta.values():
+            searchable_parts.append(str(v))
+    related = fm.get("related_to", [])
+    if isinstance(related, list):
+        searchable_parts.extend(str(r) for r in related)
+
+    # Check all searchable parts + body lines
+    matching_lines: list[str] = []
+    for part in searchable_parts:
+        if query_lower in part.lower():
+            matching_lines.append(part.strip())
+    for line in body.split("\n"):
+        if query_lower in line.lower():
+            matching_lines.append(line.strip())
+
+    if not matching_lines:
+        return None
+
+    return SearchResult(
+        node_id=node_id,
+        context=context,
+        content_type=content_type,
+        matches=matching_lines,
+        source=source,
+    )
+
+
+def search_nodes(*, pool_path: Path, query: str) -> list[SearchResult]:
+    """Search node frontmatter and body text in a pool.
+
+    Searches across both live/ and snapshots/ directories.
+    Case-insensitive. Returns matching nodes with excerpts.
+
+    Args:
+        pool_path: Root directory of the pool.
+        query: Search string.
+
+    Returns:
+        List of SearchResult objects, one per matching node.
+    """
+    results: list[SearchResult] = []
+    for subdir in ("live", "snapshots"):
+        d = pool_path / subdir
+        if not d.exists():
+            continue
+        for md_file in sorted(d.glob("*.md")):
+            result = _search_file(md_file, query, "node")
+            if result is not None:
+                results.append(result)
+    return results
+
+
+def search_barrel(*, pool_path: Path, query: str) -> list[SearchResult]:
+    """Search barrel cached content in a pool.
+
+    Only searches what's been hydrated — barrel directory must exist.
+    Case-insensitive. Returns matching entries with excerpts.
+
+    Args:
+        pool_path: Root directory of the pool.
+        query: Search string.
+
+    Returns:
+        List of SearchResult objects, one per matching barrel entry.
+    """
+    barrel_dir = pool_path / _BARREL_DIR
+    if not barrel_dir.exists():
+        return []
+    results: list[SearchResult] = []
+    for md_file in sorted(barrel_dir.glob("*.md")):
+        result = _search_file(md_file, query, "barrel")
+        if result is not None:
+            results.append(result)
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Timeline state
 # ---------------------------------------------------------------------------
 

@@ -49,6 +49,8 @@ from alph.core import (
     parse_remote_registry,
     resolve_default_pool,
     resolve_pool_name,
+    search_barrel,
+    search_nodes,
     show_node,
     update_node,
     validate_config_keys,
@@ -1988,6 +1990,43 @@ def completions_install(
 
 
 # ---------------------------------------------------------------------------
+# Search command (top-level)
+# ---------------------------------------------------------------------------
+
+
+@app.command("search")
+def search_cmd(
+    query: str = typer.Argument(..., help="Search string."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Search node frontmatter and body text in a pool."""
+    _apply_verbose(verbose)
+    cfg = _load_cli_config()
+    pool_path = _resolve_pool_for_barrel(pool, cfg)
+    results = search_nodes(pool_path=pool_path, query=query)
+    if not results:
+        console.print(f"[dim]No nodes matching '{query}'.[/dim]")
+        return
+    table = Table(
+        show_header=True,
+        header_style="bold",
+        row_styles=["", "dim"],
+        width=min(120, _console_width()),
+    )
+    table.add_column("Node ID")
+    table.add_column("Type")
+    table.add_column("Context", max_width=50)
+    table.add_column("Matches", max_width=40)
+    for r in results:
+        excerpt = "; ".join(r.matches[:2])
+        if len(r.matches) > 2:
+            excerpt += f" (+{len(r.matches) - 2} more)"
+        table.add_row(r.node_id, r.content_type, r.context, excerpt)
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
 # Barrel commands
 # ---------------------------------------------------------------------------
 
@@ -2206,6 +2245,37 @@ def barrel_export_cmd(
         console.print("[dim]No barrel cache entries to export.[/dim]")
         return
     console.print(output)
+
+
+@barrel_app.command("search")
+def barrel_search_cmd(
+    query: str = typer.Argument(..., help="Search string."),
+    pool: str | None = typer.Option(None, "--pool", "-p", help="Pool path or name."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Search barrel cached content (deep search of hydrated live content)."""
+    _apply_verbose(verbose)
+    cfg = _load_cli_config()
+    pool_path = _resolve_pool_for_barrel(pool, cfg)
+    results = search_barrel(pool_path=pool_path, query=query)
+    if not results:
+        console.print(f"[dim]No barrel entries matching '{query}'.[/dim]")
+        return
+    table = Table(
+        show_header=True,
+        header_style="bold",
+        row_styles=["", "dim"],
+        width=min(120, _console_width()),
+    )
+    table.add_column("Node ID")
+    table.add_column("Type")
+    table.add_column("Matches", max_width=60)
+    for r in results:
+        excerpt = "; ".join(r.matches[:2])
+        if len(r.matches) > 2:
+            excerpt += f" (+{len(r.matches) - 2} more)"
+        table.add_row(r.node_id, r.content_type, excerpt)
+    console.print(table)
 
 
 # ---------------------------------------------------------------------------
