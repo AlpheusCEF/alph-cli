@@ -1177,6 +1177,21 @@ def init_registry(
         )
     if not is_remote_registry(str(pool_home)):
         pool_home.mkdir(parents=True, exist_ok=True)
+        # Create starter hydration.yaml with barrel defaults if not present.
+        hydration_file = pool_home / "hydration.yaml"
+        if not hydration_file.exists():
+            hydration_file.write_text(
+                "# Registry-scoped hydration and context resolution.\n"
+                "#\n"
+                "# types     — how to resolve each content_type via MCP or CLI\n"
+                "# barrel    — hydration cache policy\n"
+                "# context_queries — how to synthesize answers from hydrated content\n"
+                "\n"
+                "types: {}\n"
+                "\n"
+                "barrel:\n"
+                "  default_ttl: 4h\n"
+            )
     global_config_dir.mkdir(parents=True, exist_ok=True)
     global_config_path = global_config_dir / "config.yaml"
 

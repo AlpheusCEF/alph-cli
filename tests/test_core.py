@@ -186,6 +186,55 @@ def test_init_registry_creates_registry_entry_in_global_config(tmp_path: Path) -
     assert not (tmp_path / "my-registry" / "config.yaml").exists()
 
 
+def test_init_registry_creates_default_hydration_yaml(tmp_path: Path) -> None:
+    """init_registry creates a starter hydration.yaml with barrel defaults for local registries."""
+    global_dir = tmp_path / "global"
+    pool_home = tmp_path / "my-registry"
+    init_registry(
+        pool_home=pool_home,
+        registry_id="reg-01",
+        context="Test",
+        global_config_dir=global_dir,
+    )
+    hydration_file = pool_home / "hydration.yaml"
+    assert hydration_file.exists()
+    data = yaml.safe_load(hydration_file.read_text())
+    assert "barrel" in data
+    assert data["barrel"]["default_ttl"] == "4h"
+    assert "types" in data
+
+
+def test_init_registry_does_not_overwrite_existing_hydration_yaml(tmp_path: Path) -> None:
+    """init_registry preserves an existing hydration.yaml."""
+    global_dir = tmp_path / "global"
+    pool_home = tmp_path / "my-registry"
+    pool_home.mkdir(parents=True)
+    existing = pool_home / "hydration.yaml"
+    existing.write_text("types:\n  custom:\n    provider: my-provider\n")
+    init_registry(
+        pool_home=pool_home,
+        registry_id="reg-01",
+        context="Test",
+        global_config_dir=global_dir,
+    )
+    # Should not overwrite
+    data = yaml.safe_load(existing.read_text())
+    assert "custom" in data["types"]
+    assert "barrel" not in data  # original had no barrel section
+
+
+def test_init_registry_skips_hydration_yaml_for_remote(tmp_path: Path) -> None:
+    """init_registry does not create hydration.yaml for remote registries."""
+    global_dir = tmp_path / "global"
+    init_registry(
+        pool_home=Path("git@github.com:org/repo.git"),
+        registry_id="remote-01",
+        context="Remote",
+        global_config_dir=global_dir,
+    )
+    # No local directory to write to — just check no crash
+
+
 def test_init_registry_validates_its_own_output(tmp_path: Path) -> None:
     """init_registry result passes registry validation."""
     global_dir = tmp_path / "global"
