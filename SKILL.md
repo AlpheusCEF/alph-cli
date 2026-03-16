@@ -196,9 +196,24 @@ or `include_statuses=["all"]` to see everything.
 
 ## Content types
 
-Built-in: `text`, `gdoc`, `slack`, `jira`, `confluence`, `email`, `image`,
-`figma`, `task`. Registries can declare additional custom types via
-`hydration.yaml`.
+Built-in types with their required meta fields:
+
+| Type | Required meta | Notes |
+|------|--------------|-------|
+| `text` | — | Default. Plain content, no external resource. |
+| `gdoc` | `url` | Google Doc. |
+| `confluence` | `url` | Confluence page. |
+| `jira` | `url`, `issue_key` | Jira ticket. |
+| `slack` | `url` OR `channel` | Slack channel or thread. `thread_ts` optional. |
+| `email` | `from`, `subject` | Email message. |
+| `image` | `url` | Image reference. |
+| `figma` | `url` | Figma design file. |
+| `task` | — | Flexible. Used by fin-cli for task management. |
+
+Validation enforces required meta at node creation and update. Registries
+can declare additional custom types via `hydration.yaml` — custom types
+skip meta validation (the registry author defines requirements via
+instructions).
 
 ## Key fields
 
