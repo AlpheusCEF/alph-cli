@@ -41,6 +41,9 @@ SECTIONS=(
     "Tab Completion (manual)"
     "MCP Server Smoke Test"
     "Hydration Config"
+    "Barrel — Hydration Cache"
+    "Skill Install and MCP Config"
+    "Creator Default"
 )
 
 # ---------------------------------------------------------------------------
@@ -1445,6 +1448,178 @@ step "Validate without hydration.yaml — custom_widget should fail." \
     "alph validate --pool '$HYDRATION_POOL' || true"
 check_exit 1 "validation fails without hydration.yaml"
 check_contains "custom_widget flagged" "custom_widget"
+
+pause_between_sections
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Section 20: Barrel — Hydration Cache
+# ═══════════════════════════════════════════════════════════════════════════
+
+section "Barrel — Hydration Cache"
+if active; then
+
+# Use the first pool from section 2 (already has nodes from section 3)
+BARREL_POOL="$REG_DIR/test-pool"
+
+explain "Barrel caches hydrated content per pool. Let's exercise the CLI."
+
+step "Barrel status on a pool with no cache yet." \
+    "alph barrel status --pool '$BARREL_POOL'"
+check_exit 0 "barrel status exits clean"
+check_contains "no cache" "No barrel cache"
+
+explain "Write a cached entry for a fake hydrated node."
+BARREL_CONTENT_FILE="$TEST_DIR/barrel-content.md"
+echo "# Hydrated Design Doc\n\nThis is cached content from a Google Doc." > "$BARREL_CONTENT_FILE"
+
+step "Write a barrel cache entry." \
+    "alph b write abc123def456 --ct gdoc --file '$BARREL_CONTENT_FILE' --pool '$BARREL_POOL'"
+check_exit 0 "barrel write succeeds"
+check_contains "cached" "Cached"
+
+step "Check freshness — should be fresh (just written)." \
+    "alph b check abc123def456 --pool '$BARREL_POOL'"
+check_exit 0 "barrel check succeeds"
+check_contains "fresh" "fresh"
+
+step "Barrel status — should show one entry." \
+    "alph b status --pool '$BARREL_POOL'"
+check_exit 0 "barrel status with entry"
+check_contains "node listed" "abc123def456"
+
+explain "Write a second entry."
+echo "# Jira Issue Content" > "$BARREL_CONTENT_FILE"
+run_silent "alph b write bbb222ccc333 --ct jira --file '$BARREL_CONTENT_FILE' --pool '$BARREL_POOL'"
+
+step "Barrel status — should show two entries." \
+    "alph b status --pool '$BARREL_POOL'"
+check_exit 0 "barrel status two entries"
+check_contains "second node listed" "bbb222ccc333"
+
+step "Mark as read — updates timeline cursor." \
+    "alph b mark-read --pool '$BARREL_POOL'"
+check_exit 0 "mark-read succeeds"
+check_contains "marked" "Marked read"
+
+step "Barrel new — nothing new since we just marked read." \
+    "alph b new --pool '$BARREL_POOL'"
+check_exit 0 "barrel new empty"
+check_contains "no new" "No new entries"
+
+explain "Write a third entry after mark-read."
+echo "# Slack Messages" > "$BARREL_CONTENT_FILE"
+run_silent "alph b write ccc333ddd444 --ct slack --file '$BARREL_CONTENT_FILE' --pool '$BARREL_POOL'"
+
+step "Barrel new — should show the entry added after mark-read." \
+    "alph b new --pool '$BARREL_POOL'"
+check_exit 0 "barrel new has entry"
+check_contains "new node" "ccc333ddd444"
+
+step "Invalidate one entry." \
+    "alph b invalidate abc123def456 --pool '$BARREL_POOL'"
+check_exit 0 "invalidate succeeds"
+check_contains "invalidated" "Invalidated"
+
+step "Check invalidated entry — should be missing." \
+    "alph b check abc123def456 --pool '$BARREL_POOL'"
+check_exit 0 "check missing"
+check_contains "missing" "missing"
+
+step "Export remaining barrel entries as JSON." \
+    "alph b export --pool '$BARREL_POOL' --format json"
+check_exit 0 "export json"
+check_contains "json has entries" "node_id"
+
+step "Flush all barrel entries." \
+    "alph b flush --pool '$BARREL_POOL'"
+check_exit 0 "flush succeeds"
+check_contains "flushed" "Flushed"
+
+step "Barrel status after flush — should be empty." \
+    "alph b status --pool '$BARREL_POOL'"
+check_exit 0 "barrel status empty after flush"
+check_contains "empty" "No barrel cache"
+
+explain "Verify aliases: 'alph bar' and 'alph b' work the same."
+step "Alias 'alph bar status'." \
+    "alph bar status --pool '$BARREL_POOL'"
+check_exit 0 "bar alias works"
+
+pause_between_sections
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Section 21: Skill Install and MCP Config
+# ═══════════════════════════════════════════════════════════════════════════
+
+section "Skill Install and MCP Config"
+if active; then
+
+explain "alph skill install sets up the SKILL.md symlink and MCP server config."
+explain "We test 'skill status' here (skill install would modify your real config)."
+
+step "Skill status — check current state." \
+    "alph skill status"
+check_exit 0 "skill status succeeds"
+check_contains "skill line" "Skill:"
+check_contains "mcp line" "MCP:"
+
+observe "Verify the output shows both Skill and MCP status." \
+    "Skill should show symlink or copy state. MCP should show configured or not."
+
+pause_between_sections
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Section 22: Creator Default
+# ═══════════════════════════════════════════════════════════════════════════
+
+section "Creator Default"
+if active; then
+
+explain "When no creator is configured, alph falls back to the system username."
+
+# Create a registry with no creator in config
+NOCREATOR_REG="$TEST_DIR/nocreator-reg"
+NOCREATOR_GLOBAL="$TEST_DIR/nocreator-global"
+mkdir -p "$NOCREATOR_GLOBAL"
+echo "{}" > "$NOCREATOR_GLOBAL/config.yaml"
+export ALPH_CONFIG_DIR="$NOCREATOR_GLOBAL"
+
+run_silent "alph registry init --pool-home '$NOCREATOR_REG' --id nocreator --context 'No creator test'"
+run_silent "alph pool init --registry nocreator --name testpool --context 'Test' --cwd '$NOCREATOR_REG'"
+
+step "Add a node with no --creator flag and no creator in config." \
+    "alph add -c 'Auto creator test' --pool '$NOCREATOR_REG/testpool'"
+check_exit 0 "add succeeds without explicit creator"
+
+CREATOR_NODE=$(ls "$NOCREATOR_REG/testpool/snapshots/"*.md 2>/dev/null | head -1)
+if [[ -n "$CREATOR_NODE" ]]; then
+    CREATOR_VALUE=$(grep "^creator:" "$CREATOR_NODE" | head -1 | sed 's/creator: //')
+    EXPECTED_CREATOR=$(whoami)
+    if [[ "$CREATOR_VALUE" == "$EXPECTED_CREATOR" ]]; then
+        check_pass "creator defaulted to system username ($EXPECTED_CREATOR)"
+    else
+        check_fail "expected creator '$EXPECTED_CREATOR' but got '$CREATOR_VALUE'"
+    fi
+else
+    check_fail "no node file found"
+fi
+
+explain "Verify that registry init created a starter hydration.yaml."
+if [[ -f "$NOCREATOR_REG/hydration.yaml" ]]; then
+    check_pass "hydration.yaml created by registry init"
+    step "Show the starter hydration.yaml." \
+        "cat '$NOCREATOR_REG/hydration.yaml'"
+    check_exit 0 "cat hydration.yaml"
+    check_contains "barrel defaults present" "default_ttl"
+else
+    check_fail "hydration.yaml not created by registry init"
+fi
+
+# Restore original config dir
+export ALPH_CONFIG_DIR="$GLOBAL_DIR"
 
 pause_between_sections
 fi
