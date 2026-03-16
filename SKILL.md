@@ -227,9 +227,26 @@ related_to: [list]        # Cross-references to other node IDs
 meta: {}                  # Source-specific: url, issue_key, channel, etc.
 ```
 
+## Search — finding content
+
+Two search tiers:
+
+```bash
+# Shallow: search node frontmatter (context, tags, meta) and body text
+alph search "oauth" --pool <pool_path>
+
+# Deep: search barrel cached content (hydrated live content)
+alph b search "PKCE" --pool <pool_path>
+```
+
+`alph search` answers "do I have a node about X?" — always available.
+`alph b search` answers "does any source material mention X?" — only
+works on content that's been hydrated into the barrel.
+
+Both are case-insensitive and return node IDs with context and matching
+excerpts.
+
 ## What alph is not
 
-- Not a search engine — scan `context` fields and use `show_pool_node` for
-  targeted retrieval.
 - Not a task manager — use live nodes to point at Jira tickets or task systems.
 - Not a database — it's git-backed Markdown. Keep nodes focused and human-readable.
