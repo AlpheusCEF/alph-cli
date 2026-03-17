@@ -1281,6 +1281,7 @@ def cmd_update(
     content: str | None = typer.Option(None, "--content", help="New body text (replaces entire body)."),
     context: str | None = typer.Option(None, "-c", "--context", help="New context description."),
     content_type: str | None = typer.Option(None, "--content-type", "--ct", help="New content type."),
+    node_type: str | None = typer.Option(None, "--node-type", "--nt", help="New node type: snapshot, snap, live. Moves file between directories."),
     related_add: list[str] = typer.Option([], "--related-add", help="Related node IDs to add (repeatable)."),
     verbose: bool = _VERBOSE_OPT,
 ) -> None:
@@ -1317,6 +1318,7 @@ def cmd_update(
             content=content,
             context=context,
             content_type=content_type,
+            node_type=node_type,
             related_add=related_add or None,
             auto_commit=cfg.auto_commit,
         )

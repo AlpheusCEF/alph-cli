@@ -2981,6 +2981,98 @@ def test_update_node_related_to_full_replacement(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# update_node — node_type changes (live <-> snapshot)
+# ---------------------------------------------------------------------------
+
+
+def test_update_node_type_live_to_snapshot_moves_file(tmp_path: Path) -> None:
+    """update_node with node_type='snapshot' moves file from live/ to snapshots/."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, node_type="live")
+    assert (pool / "live" / f"{node_id}.md").exists()
+    assert not (pool / "snapshots" / f"{node_id}.md").exists()
+
+    result = update_node(pool_path=pool, node_id=node_id, node_type="snapshot")
+    assert result.valid
+    assert not result.noop
+    assert not (pool / "live" / f"{node_id}.md").exists()
+    assert (pool / "snapshots" / f"{node_id}.md").exists()
+
+    # Frontmatter should say snapshot
+    fm = extract_frontmatter(result.path.read_text())
+    assert fm is not None
+    assert fm["node_type"] == "snapshot"
+
+
+def test_update_node_type_snapshot_to_live_moves_file(tmp_path: Path) -> None:
+    """update_node with node_type='live' moves file from snapshots/ to live/."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, node_type="snapshot")
+    assert (pool / "snapshots" / f"{node_id}.md").exists()
+
+    result = update_node(pool_path=pool, node_id=node_id, node_type="live")
+    assert result.valid
+    assert not (pool / "snapshots" / f"{node_id}.md").exists()
+    assert (pool / "live" / f"{node_id}.md").exists()
+
+    fm = extract_frontmatter(result.path.read_text())
+    assert fm is not None
+    assert fm["node_type"] == "live"
+
+
+def test_update_node_type_snap_alias_works(tmp_path: Path) -> None:
+    """update_node normalizes 'snap' to 'snapshot'."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, node_type="live")
+
+    result = update_node(pool_path=pool, node_id=node_id, node_type="snap")
+    assert result.valid
+    assert (pool / "snapshots" / f"{node_id}.md").exists()
+
+    fm = extract_frontmatter(result.path.read_text())
+    assert fm is not None
+    assert fm["node_type"] == "snapshot"
+
+
+def test_update_node_type_same_type_is_noop(tmp_path: Path) -> None:
+    """update_node with same node_type as current is a noop (no file move)."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, node_type="snapshot")
+
+    result = update_node(pool_path=pool, node_id=node_id, node_type="snapshot")
+    assert result.noop
+
+
+def test_update_node_type_with_content_body(tmp_path: Path) -> None:
+    """update_node can change node_type and set body content in one operation (freeze pattern)."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool, node_type="live")
+
+    result = update_node(
+        pool_path=pool, node_id=node_id,
+        node_type="snapshot",
+        content="# Frozen Content\n\nThis was hydrated and frozen.",
+    )
+    assert result.valid
+    assert (pool / "snapshots" / f"{node_id}.md").exists()
+
+    detail = show_node(pool, node_id)
+    assert detail is not None
+    assert detail.node_type == "snapshot"
+    assert "Frozen Content" in detail.body
+
+
+def test_update_node_type_invalid_value(tmp_path: Path) -> None:
+    """update_node rejects invalid node_type values."""
+    pool = _make_pool(tmp_path)
+    node_id = _create_test_node(pool)
+
+    result = update_node(pool_path=pool, node_id=node_id, node_type="bogus")
+    assert not result.valid
+    assert any("node_type" in e for e in result.errors)
+
+
+# ---------------------------------------------------------------------------
 # slack validation relaxation — channel-only is valid
 # ---------------------------------------------------------------------------
 

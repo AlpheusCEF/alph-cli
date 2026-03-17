@@ -1613,9 +1613,14 @@ def update_node(
     related_to: list[str] | None = None,
     related_add: list[str] | None = None,
     content_type: str | None = None,
+    node_type: str | None = None,
     auto_commit: bool = False,
 ) -> UpdateResult:
     """Update an existing node's frontmatter and/or body.
+
+    When ``node_type`` changes between ``live`` and ``snapshot``, the file
+    is moved between ``live/`` and ``snapshots/`` directories. The ``snap``
+    alias is normalized to ``snapshot``.
 
     Args:
         pool_path: Root directory of the pool.
@@ -1630,6 +1635,7 @@ def update_node(
         related_to: Full replacement of the related_to list.
         related_add: Related IDs to append (mutually exclusive with related_to).
         content_type: New content_type value.
+        node_type: New node_type (snapshot, snap, live). Moves file if changed.
         auto_commit: Git commit after writing.
 
     Returns:
@@ -1676,6 +1682,23 @@ def update_node(
         frontmatter["context"] = context
     if content_type is not None:
         frontmatter["content_type"] = content_type
+
+    # Node type (may trigger file move)
+    _node_type_changed = False
+    if node_type is not None:
+        normalized = "snapshot" if node_type == "snap" else node_type
+        if normalized not in {"snapshot", "live"}:
+            return UpdateResult(
+                node_id=node_id, path=node_file, valid=False,
+                errors=[f"invalid node_type: '{node_type}' (valid: snapshot, snap, live)"],
+            )
+        current_type = str(frontmatter.get("node_type", ""))
+        current_normalized = "snapshot" if current_type == "snap" else current_type
+        if normalized != current_normalized:
+            frontmatter["node_type"] = normalized
+            _node_type_changed = True
+        else:
+            frontmatter["node_type"] = normalized
 
     # Tags
     if tags is not None:
@@ -1734,15 +1757,31 @@ def update_node(
         new_text += f"\n{new_body}\n"
 
     # No-op check
-    if new_text == original_text:
+    if new_text == original_text and not _node_type_changed:
         return UpdateResult(node_id=node_id, path=node_file, noop=True)
 
-    node_file.write_text(new_text)
+    # Determine target path (may differ if node_type changed)
+    target_file = node_file
+    if _node_type_changed:
+        new_type = str(frontmatter.get("node_type", ""))
+        target_dir_name = "snapshots" if new_type == "snapshot" else "live"
+        target_dir = pool_path / target_dir_name
+        target_dir.mkdir(exist_ok=True)
+        target_file = target_dir / f"{node_id}.md"
+
+    target_file.write_text(new_text)
+
+    # Remove old file if it moved
+    if _node_type_changed and target_file != node_file and node_file.exists():
+        node_file.unlink()
 
     if auto_commit:
         try:
+            files_to_add = [str(target_file)]
+            if _node_type_changed and target_file != node_file:
+                files_to_add.append(str(node_file))
             subprocess.run(
-                ["git", "-C", str(pool_path), "add", str(node_file)],
+                ["git", "-C", str(pool_path), "add"] + files_to_add,
                 check=True, capture_output=True,
             )
             subprocess.run(
@@ -1753,7 +1792,7 @@ def update_node(
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
 
-    return UpdateResult(node_id=node_id, path=node_file)
+    return UpdateResult(node_id=node_id, path=target_file)
 
 
 # ---------------------------------------------------------------------------

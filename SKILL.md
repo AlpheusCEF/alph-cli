@@ -171,10 +171,15 @@ When you detect this, tell the user:
 2. Suggest freezing: capture the current hydrated content as the node
    body and convert from live to snapshot
 
-Note: `alph` does not yet have a `freeze` command. For now, the user
-would need to manually move the file from `live/` to `snapshots/` and
-add the hydrated content as body text. A proper `alph freeze <id>`
-command is planned.
+To freeze a node, use `update_pool_node` (or `alph update`) with
+`node_type="snapshot"` and `content=<hydrated body>`. This moves the
+file from `live/` to `snapshots/` and writes the body in one operation:
+
+```bash
+alph update <id> --node-type snapshot --content "$(cat barrel/<id>.md)"
+```
+
+Or via MCP: `update_pool_node(node_type="snapshot", content="...")`
 
 ## Hydration failures
 

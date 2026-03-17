@@ -356,9 +356,14 @@ def tool_update_node(
     content: str | None = None,
     context: str | None = None,
     content_type: str | None = None,
+    node_type: str | None = None,
     related_add: list[str] | None = None,
 ) -> dict[str, Any]:
     """Update an existing node's frontmatter and/or body.
+
+    When node_type changes between 'live' and 'snapshot', the file is
+    moved between live/ and snapshots/ directories. Use this to freeze
+    a live node: set node_type='snapshot' and content=<hydrated body>.
 
     Args:
         pool_path: Absolute path to the pool directory.
@@ -370,6 +375,7 @@ def tool_update_node(
         content: New body text (replaces entire body).
         context: New context description.
         content_type: New content type.
+        node_type: New node type (snapshot, snap, live). Moves file if changed.
         related_add: Related node IDs to append.
 
     Returns:
@@ -393,6 +399,7 @@ def tool_update_node(
         content=content,
         context=context,
         content_type=content_type,
+        node_type=node_type,
         related_add=related_add,
     )
     if not result.valid:
@@ -513,6 +520,7 @@ def update_pool_node(
     content: str | None = None,
     context: str | None = None,
     content_type: str | None = None,
+    node_type: str | None = None,
     related_add: list[str] | None = None,
 ) -> dict[str, Any]:
     """Update an existing node. See tool_update_node for full docs."""
@@ -526,6 +534,7 @@ def update_pool_node(
         content=content,
         context=context,
         content_type=content_type,
+        node_type=node_type,
         related_add=related_add,
     )
 
