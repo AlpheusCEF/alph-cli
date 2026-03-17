@@ -154,6 +154,28 @@ flat set of facts. When multiple statements address the same topic, **later
 content supersedes earlier content**. Track the arc of decisions and always
 be clear about what is current vs. historical.
 
+## Live-to-snapshot signals
+
+During hydration, watch for signals that a live node should be frozen
+into a snapshot — its content has reached a final state and the live
+pointer is no longer needed:
+
+- **Jira ticket**: Status is Done, Closed, Resolved, or Won't Do
+- **Design doc / PRD**: Marked "Approved", "Final", or "Archived"
+- **Slack thread**: Discussion concluded with a clear decision
+- **Any resource**: Deleted, moved, or returning 404/403 on hydration
+
+When you detect this, tell the user:
+1. Which node and why (e.g., "INFOSEC-5107 is Done — this live pointer
+   can be frozen")
+2. Suggest freezing: capture the current hydrated content as the node
+   body and convert from live to snapshot
+
+Note: `alph` does not yet have a `freeze` command. For now, the user
+would need to manually move the file from `live/` to `snapshots/` and
+add the hydrated content as body text. A proper `alph freeze <id>`
+command is planned.
+
 ## Hydration failures
 
 After attempting to hydrate all nodes, if **any** node failed (MCP server
