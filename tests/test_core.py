@@ -6,6 +6,8 @@ from pathlib import Path
 import yaml
 
 from alph.core import (
+    LATEST_FILENAME,
+    LATEST_NODE_ID,
     RESERVED_NAMES,
     AlphConfig,
     HydrationConfig,
@@ -17,6 +19,7 @@ from alph.core import (
     check_git_state,
     check_idempotency,
     collect_registries,
+    create_latest_node,
     create_node,
     default_global_config_text,
     extract_frontmatter,
@@ -35,6 +38,7 @@ from alph.core import (
     parse_remote_registry,
     resolve_default_pool,
     resolve_pool_name,
+    search_nodes,
     show_node,
     update_node,
     update_state,
@@ -3383,3 +3387,201 @@ def test_show_node_with_non_matching_hydration_returns_empty(tmp_path: Path) -> 
     detail = show_node(pool, result.node_id, hydration=hydration)
     assert detail is not None
     assert detail.hydration_instructions == ""
+
+
+# ---------------------------------------------------------------------------
+# Latest node
+# ---------------------------------------------------------------------------
+
+
+def test_validate_node_accepts_latest_node_type() -> None:
+    """validate_node accepts node_type 'latest' without errors."""
+    frontmatter = {
+        "schema_version": "1",
+        "id": "_latest",
+        "timestamp": "2026-03-20T00:00:00Z",
+        "source": "cli",
+        "node_type": "latest",
+        "context": "Pool entry point",
+        "creator": "chase@example.com",
+    }
+    result = validate_node(frontmatter)
+    assert result.valid
+    assert result.errors == []
+
+
+def test_latest_node_id_constant() -> None:
+    """LATEST_NODE_ID is '_latest' and LATEST_FILENAME is '_latest.md'."""
+    assert LATEST_NODE_ID == "_latest"
+    assert LATEST_FILENAME == "_latest.md"
+
+
+def test_create_latest_node_writes_file_with_correct_frontmatter(tmp_path: Path) -> None:
+    """create_latest_node writes _latest.md at pool root with correct frontmatter."""
+    pool = _make_pool(tmp_path)
+    result = create_latest_node(
+        pool_path=pool, creator="chase@example.com", context="Test pool",
+    )
+    assert result.node_id == "_latest"
+    assert result.path == pool / "_latest.md"
+    assert not result.duplicate
+
+    text = (pool / "_latest.md").read_text()
+    fm = extract_frontmatter(text)
+    assert fm is not None
+    assert fm["id"] == "_latest"
+    assert fm["node_type"] == "latest"
+    assert fm["source"] == "cli"
+    assert fm["creator"] == "chase@example.com"
+    assert fm["context"] == "Test pool"
+    assert fm["schema_version"] == "1"
+    assert "timestamp" in fm
+
+
+def test_create_latest_node_includes_default_body_template(tmp_path: Path) -> None:
+    """create_latest_node includes a default body with the pool name heading."""
+    pool = _make_pool(tmp_path)
+    create_latest_node(
+        pool_path=pool, creator="chase@example.com", context="Test pool",
+        pool_name="my-pool",
+    )
+    text = (pool / "_latest.md").read_text()
+    parts = text.split("---", 2)
+    body = parts[2].strip()
+    assert body.startswith("# my-pool")
+    assert "Current State" in body
+    assert "Key Nodes" in body
+    assert "TODOs" in body
+
+
+def test_create_latest_node_is_idempotent(tmp_path: Path) -> None:
+    """Calling create_latest_node twice returns duplicate=True the second time."""
+    pool = _make_pool(tmp_path)
+    first = create_latest_node(
+        pool_path=pool, creator="chase@example.com", context="Test pool",
+    )
+    assert not first.duplicate
+    second = create_latest_node(
+        pool_path=pool, creator="other@example.com", context="Different context",
+    )
+    assert second.duplicate
+    assert second.existing_creator == "chase@example.com"
+    assert second.node_id == "_latest"
+
+
+def test_init_pool_creates_latest_node(tmp_path: Path) -> None:
+    """init_pool auto-creates _latest.md at the pool root."""
+    global_dir = tmp_path / "global"
+    init_registry(pool_home=tmp_path, registry_id="reg-01", context="Test registry",
+                  global_config_dir=global_dir)
+    result = init_pool(
+        registry_id="reg-01",
+        name="highlander",
+        context="Maintenance for the Highlander",
+        cwd=tmp_path,
+        global_config_dir=global_dir,
+    )
+    latest_file = result.pool_path / "_latest.md"
+    assert latest_file.exists()
+    fm = extract_frontmatter(latest_file.read_text())
+    assert fm is not None
+    assert fm["id"] == "_latest"
+    assert fm["node_type"] == "latest"
+    assert fm["context"] == "Maintenance for the Highlander"
+
+
+def test_find_node_file_discovers_latest(tmp_path: Path) -> None:
+    """_find_node_file returns pool root path for LATEST_NODE_ID."""
+    from alph.core import _find_node_file
+
+    pool = _make_pool(tmp_path)
+    create_latest_node(pool_path=pool, creator="chase@example.com", context="test")
+    found = _find_node_file(pool, "_latest")
+    assert found is not None
+    assert found == pool / "_latest.md"
+
+
+def test_find_node_file_returns_none_when_no_latest(tmp_path: Path) -> None:
+    """_find_node_file returns None for _latest when file does not exist."""
+    from alph.core import _find_node_file
+
+    pool = _make_pool(tmp_path)
+    assert _find_node_file(pool, "_latest") is None
+
+
+def test_show_node_reads_latest(tmp_path: Path) -> None:
+    """show_node returns full detail for the latest node."""
+    pool = _make_pool(tmp_path)
+    create_latest_node(pool_path=pool, creator="chase@example.com", context="entry point")
+    detail = show_node(pool, "_latest")
+    assert detail is not None
+    assert detail.node_id == "_latest"
+    assert detail.node_type == "latest"
+    assert detail.creator == "chase@example.com"
+    assert "Current State" in detail.body
+
+
+def test_list_nodes_includes_latest_first(tmp_path: Path) -> None:
+    """list_nodes returns the latest node as the first entry."""
+    pool = _make_pool(tmp_path)
+    create_latest_node(pool_path=pool, creator="chase@example.com", context="entry point")
+    create_node(
+        pool_path=pool, source="cli", node_type="snapshot",
+        context="regular node", creator="chase@example.com",
+    )
+    summaries = list_nodes(pool)
+    assert len(summaries) >= 2
+    assert summaries[0].node_id == "_latest"
+    assert summaries[0].node_type == "latest"
+
+
+def test_list_nodes_works_without_latest(tmp_path: Path) -> None:
+    """list_nodes still works for pools with no _latest.md."""
+    pool = _make_pool(tmp_path)
+    create_node(
+        pool_path=pool, source="cli", node_type="snapshot",
+        context="regular node", creator="chase@example.com",
+    )
+    summaries = list_nodes(pool)
+    assert len(summaries) == 1
+    assert summaries[0].node_type == "snapshot"
+
+
+def test_search_nodes_finds_text_in_latest(tmp_path: Path) -> None:
+    """search_nodes includes results from the latest node body."""
+    pool = _make_pool(tmp_path)
+    create_latest_node(pool_path=pool, creator="chase@example.com", context="entry point")
+    # Update latest body to include searchable text.
+    latest_path = pool / "_latest.md"
+    text = latest_path.read_text()
+    latest_path.write_text(text + "\nSearchable unique phrase here.\n")
+    results = search_nodes(pool_path=pool, query="unique phrase")
+    assert len(results) >= 1
+    assert any(r.node_id == "_latest" for r in results)
+
+
+def test_update_node_works_on_latest(tmp_path: Path) -> None:
+    """update_node can modify the latest node's content and context."""
+    pool = _make_pool(tmp_path)
+    create_latest_node(pool_path=pool, creator="chase@example.com", context="original")
+    result = update_node(
+        pool_path=pool, node_id="_latest",
+        content="Updated body text", context="revised entry point",
+    )
+    assert result.valid
+    assert result.node_id == "_latest"
+    detail = show_node(pool, "_latest")
+    assert detail is not None
+    assert detail.context == "revised entry point"
+    assert detail.body == "Updated body text"
+
+
+def test_update_node_blocks_type_change_on_latest(tmp_path: Path) -> None:
+    """update_node rejects changing node_type away from 'latest'."""
+    pool = _make_pool(tmp_path)
+    create_latest_node(pool_path=pool, creator="chase@example.com", context="entry point")
+    result = update_node(
+        pool_path=pool, node_id="_latest", node_type="snapshot",
+    )
+    assert not result.valid
+    assert any("latest" in e.lower() for e in result.errors)

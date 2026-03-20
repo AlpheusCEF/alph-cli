@@ -33,6 +33,8 @@ import fastmcp
 from mcp.types import ToolAnnotations
 
 from alph.core import (
+    LATEST_FILENAME,
+    LATEST_NODE_ID,
     HydrationConfig,
     create_node,
     extract_frontmatter,
@@ -59,8 +61,10 @@ mcp = fastmcp.FastMCP(
     instructions=(
         "Alpheus Context Engine Framework. Use these tools to create, list, "
         "show, search, and validate context nodes in a pool. "
-        "A pool is a directory containing snapshots/ (snapshot nodes) and "
-        "live/ (live nodes). "
+        "A pool is a directory containing snapshots/ (snapshot nodes), "
+        "live/ (live nodes), and a _latest.md entry-point node at the pool root. "
+        "Start by reading _latest (tool_show_node with node_id='_latest') for "
+        "an overview of what matters in the pool before diving into individual nodes. "
         "Always use tool_list_nodes to discover existing nodes before adding "
         "new ones — alph deduplicates by ID but a quick scan avoids surprises. "
         "Use tool_show_node to read full content including body text. "
@@ -269,6 +273,8 @@ def tool_show_node(
                 node_id, context, node_type, status, timestamp, source,
                 creator, body, tags, related_to, meta, hydration_instructions
     """
+    if node_id in ("latest", "_latest"):
+        node_id = LATEST_NODE_ID
     hydration = _load_hydration_for_pool(pool_path, config_dir)
     with _resolve_pool(pool_path) as pool:
         detail = show_node(pool, node_id, hydration=hydration)
@@ -319,6 +325,23 @@ def tool_validate_pool(
     all_errors: list[dict[str, Any]] = []
 
     with _resolve_pool(pool_path) as pool:
+        # Validate latest node if present.
+        latest_file = pool / LATEST_FILENAME
+        if latest_file.exists():
+            lfm = extract_frontmatter(latest_file.read_text())
+            if lfm is None:
+                all_errors.append({
+                    "file": latest_file.name,
+                    "errors": ["no frontmatter found"],
+                })
+            else:
+                lvr = validate_node(lfm, registry_types=registry_types)
+                if not lvr.valid:
+                    all_errors.append({
+                        "file": latest_file.name,
+                        "errors": lvr.errors,
+                    })
+
         for subdir in ("snapshots", "live"):
             directory = pool / subdir
             if not directory.exists():

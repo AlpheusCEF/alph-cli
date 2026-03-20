@@ -365,7 +365,14 @@ _REQUIRED_NODE_FIELDS = {
     "creator",
 }
 
-_VALID_NODE_TYPES = {"snapshot", "snap", "live"}
+_VALID_NODE_TYPES = {"snapshot", "snap", "live", "latest"}
+
+# ---------------------------------------------------------------------------
+# Latest node — pool entry point
+# ---------------------------------------------------------------------------
+
+LATEST_NODE_ID = "_latest"
+LATEST_FILENAME = "_latest.md"
 _VALID_SCHEMA_VERSIONS = {"1"}
 _VALID_STATUSES = {"active", "archived", "suppressed"}
 _DEFAULT_STATUS = "active"
@@ -1394,6 +1401,14 @@ def init_pool(
         yaml.dump(dotfile_data, default_flow_style=False, sort_keys=False)
     )
 
+    # Create the latest node entry point.
+    create_latest_node(
+        pool_path=pool_path,
+        creator=cfg.creator,
+        context=context,
+        pool_name=name,
+    )
+
     # Decide whether to also write a config entry.
     # Repo-type pools always get a config entry (not discoverable by dir scan).
     # Subdir pools only get a config entry when register_subdir_pools is true.
@@ -1453,6 +1468,9 @@ def _find_node_file(pool_path: Path, node_id: str) -> Path | None:
     Returns:
         Path to the node file, or None if not found.
     """
+    if node_id == LATEST_NODE_ID:
+        latest_path = pool_path / LATEST_FILENAME
+        return latest_path if latest_path.exists() else None
     for subdir in ("snapshots", "live"):
         directory = pool_path / subdir
         if not directory.exists():
@@ -1487,6 +1505,60 @@ def check_idempotency(pool_path: Path, node_id: str) -> ExistingNode | None:
         creator=str(frontmatter["creator"]),
         timestamp=str(frontmatter["timestamp"]),
     )
+
+
+def create_latest_node(
+    *,
+    pool_path: Path,
+    creator: str,
+    context: str,
+    pool_name: str = "",
+) -> NodeResult:
+    """Create the _latest.md entry-point node at the pool root.
+
+    Args:
+        pool_path: Root directory of the pool.
+        creator: Email address of the creator.
+        context: Human/LLM-readable description for the pool.
+        pool_name: Pool name for the default heading. Falls back to pool_path.name.
+
+    Returns:
+        NodeResult with node_id=LATEST_NODE_ID. If the file already exists,
+        duplicate=True.
+    """
+    latest_path = pool_path / LATEST_FILENAME
+    if latest_path.exists():
+        fm = extract_frontmatter(latest_path.read_text())
+        return NodeResult(
+            node_id=LATEST_NODE_ID,
+            path=latest_path,
+            duplicate=True,
+            existing_creator=str(fm["creator"]) if fm else "",
+        )
+
+    resolved_name = pool_name or pool_path.name
+    timestamp = datetime.now(UTC).isoformat()
+    frontmatter: dict[str, object] = {
+        "schema_version": "1",
+        "id": LATEST_NODE_ID,
+        "timestamp": timestamp,
+        "source": "cli",
+        "node_type": "latest",
+        "context": context,
+        "creator": creator,
+    }
+    body = (
+        f"# {resolved_name}\n\n"
+        "## Current State\n\n"
+        "<!-- What is the current understanding? What matters right now? -->\n\n"
+        "## Key Nodes\n\n"
+        "<!-- Reference important nodes by ID -->\n\n"
+        "## TODOs\n\n"
+        "- [ ] ...\n"
+    )
+    text = f"---\n{yaml.dump(frontmatter, default_flow_style=False, sort_keys=False)}---\n{body}"
+    latest_path.write_text(text)
+    return NodeResult(node_id=LATEST_NODE_ID, path=latest_path)
 
 
 def create_node(
@@ -1686,6 +1758,12 @@ def update_node(
     # Node type (may trigger file move)
     _node_type_changed = False
     if node_type is not None:
+        current_type = str(frontmatter.get("node_type", ""))
+        if current_type == "latest":
+            return UpdateResult(
+                node_id=node_id, path=node_file, valid=False,
+                errors=["cannot change node_type of the latest node"],
+            )
         normalized = "snapshot" if node_type == "snap" else node_type
         if normalized not in {"snapshot", "live"}:
             return UpdateResult(
@@ -1821,6 +1899,26 @@ def list_nodes(
     """
     allowed = include_statuses if include_statuses is not None else {_DEFAULT_STATUS}
     summaries: list[NodeSummary] = []
+
+    # Prepend latest node if present.
+    latest_path = pool_path / LATEST_FILENAME
+    if latest_path.exists():
+        latest_fm = extract_frontmatter(latest_path.read_text())
+        if latest_fm:
+            latest_status = str(latest_fm.get("status", _DEFAULT_STATUS))
+            if latest_status in allowed:
+                summaries.append(
+                    NodeSummary(
+                        node_id=str(latest_fm.get("id", "")),
+                        context=str(latest_fm.get("context", "")),
+                        node_type=str(latest_fm.get("node_type", "")),
+                        timestamp=str(latest_fm.get("timestamp", "")),
+                        source=str(latest_fm.get("source", "")),
+                        status=latest_status,
+                        content_type=str(latest_fm.get("content_type", "text")),
+                    )
+                )
+
     for subdir in ("snapshots", "live"):
         directory = pool_path / subdir
         if not directory.exists():
@@ -2355,6 +2453,14 @@ def search_nodes(*, pool_path: Path, query: str) -> list[SearchResult]:
         List of SearchResult objects, one per matching node.
     """
     results: list[SearchResult] = []
+
+    # Include latest node if present.
+    latest_path = pool_path / LATEST_FILENAME
+    if latest_path.exists():
+        latest_result = _search_file(latest_path, query, "node")
+        if latest_result is not None:
+            results.append(latest_result)
+
     for subdir in ("live", "snapshots"):
         d = pool_path / subdir
         if not d.exists():

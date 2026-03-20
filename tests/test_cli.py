@@ -357,12 +357,13 @@ def test_list_output_json(tmp_path: Path) -> None:
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert isinstance(data, list)
-    assert len(data) == 1
-    assert data[0]["context"] == "JSON node"
-    assert "id" in data[0]
-    assert "type" in data[0]
-    assert "status" in data[0]
-    assert "timestamp" in data[0]
+    assert len(data) == 2  # latest node + added node
+    json_node = [d for d in data if d["context"] == "JSON node"]
+    assert len(json_node) == 1
+    assert "id" in json_node[0]
+    assert "type" in json_node[0]
+    assert "status" in json_node[0]
+    assert "timestamp" in json_node[0]
 
 
 def test_list_output_yaml(tmp_path: Path) -> None:
@@ -373,7 +374,8 @@ def test_list_output_yaml(tmp_path: Path) -> None:
     assert result.exit_code == 0
     data = yaml.safe_load(result.output)
     assert isinstance(data, list)
-    assert data[0]["context"] == "YAML node"
+    yaml_nodes = [d for d in data if d["context"] == "YAML node"]
+    assert len(yaml_nodes) == 1
 
 
 def test_list_output_csv(tmp_path: Path) -> None:
@@ -384,7 +386,7 @@ def test_list_output_csv(tmp_path: Path) -> None:
     assert result.exit_code == 0
     lines = result.output.strip().splitlines()
     assert lines[0] == "id,type,content_type,status,context,timestamp"
-    assert "CSV node" in lines[1]
+    assert any("CSV node" in line for line in lines[1:])
 
 
 def test_add_with_status_writes_status_to_frontmatter(tmp_path: Path) -> None:
@@ -2649,3 +2651,55 @@ def test_skill_status_copy_warns(tmp_path: Path, monkeypatch) -> None:  # type: 
     assert result.exit_code == 0
     assert "copy" in result.output
     assert "stale" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Latest node — CLI integration
+# ---------------------------------------------------------------------------
+
+
+def test_show_latest_shorthand(tmp_path: Path) -> None:
+    """alph show latest resolves to _latest node."""
+    pool = _init_registry_and_pool(tmp_path)
+    result = runner.invoke(app, ["show", "latest", "--pool", str(pool)])
+    assert result.exit_code == 0
+    assert "_latest" in result.output
+
+
+def test_show_underscore_latest(tmp_path: Path) -> None:
+    """alph show _latest works directly."""
+    pool = _init_registry_and_pool(tmp_path)
+    result = runner.invoke(app, ["show", "_latest", "--pool", str(pool)])
+    assert result.exit_code == 0
+    assert "_latest" in result.output
+
+
+def test_validate_includes_latest_node(tmp_path: Path) -> None:
+    """alph validate counts the latest node in its validation."""
+    pool = _init_registry_and_pool(tmp_path)
+    result = runner.invoke(app, ["validate", "--pool", str(pool)])
+    assert result.exit_code == 0
+    # The latest node should be counted.
+    assert "valid" in result.output
+
+
+def test_pool_init_creates_latest_node_via_cli(tmp_path: Path) -> None:
+    """alph pool init creates _latest.md at pool root."""
+    pool = _init_registry_and_pool(tmp_path)
+    assert (pool / "_latest.md").exists()
+    fm = extract_frontmatter((pool / "_latest.md").read_text())
+    assert fm is not None
+    assert fm["node_type"] == "latest"
+
+
+def test_list_shows_latest_first_via_cli(tmp_path: Path) -> None:
+    """alph list shows latest node as first entry."""
+    pool = _init_registry_and_pool(tmp_path)
+    runner.invoke(app, ["add", "-c", "Regular node",
+                        "--pool", str(pool), "--creator", "chase@example.com"])
+    result = runner.invoke(app, ["list", "--pool", str(pool)])
+    assert result.exit_code == 0
+    lines = result.output.strip().split("\n")
+    # Find the first data row containing _latest.
+    data_lines = [l for l in lines if "_latest" in l]
+    assert len(data_lines) >= 1

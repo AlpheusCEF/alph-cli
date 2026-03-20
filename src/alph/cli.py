@@ -17,6 +17,8 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from alph.core import (
+    LATEST_FILENAME,
+    LATEST_NODE_ID,
     _CONTENT_TYPE_REQUIRED_META,
     _VALID_CONTENT_TYPES,
     AlphConfig,
@@ -1455,6 +1457,9 @@ def cmd_show(
 ) -> None:
     """Display full node content formatted for terminal."""
     _apply_verbose(verbose)
+    # Normalize "latest" / "_latest" to the canonical LATEST_NODE_ID.
+    if node_id in ("latest", "_latest"):
+        node_id = LATEST_NODE_ID
     cfg = _load_cli_config()
     pool_str = _require_pool(pool, cfg)
     _pull_if_requested(pool_str, cfg, pull=pull)
@@ -1513,6 +1518,21 @@ def cmd_validate(
     errors_found = False
     node_count = 0
     with _pool_context(pool_str, cfg) as resolved_pool:
+        # Validate latest node if present.
+        latest_file = resolved_pool / LATEST_FILENAME
+        if latest_file.exists():
+            node_count += 1
+            _lfm = extract_frontmatter(latest_file.read_text())
+            if _lfm is None:
+                console.print(f"[red]no frontmatter:[/red] {latest_file.name}")
+                errors_found = True
+            else:
+                _lvr = validate_node(_lfm, registry_types=registry_types)
+                if not _lvr.valid:
+                    errors_found = True
+                    for error in _lvr.errors:
+                        console.print(f"[red]invalid:[/red] {latest_file.name}: {error}")
+
         for subdir in ("snapshots", "live"):
             directory = resolved_pool / subdir
             if not directory.exists():

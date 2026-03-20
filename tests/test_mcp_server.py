@@ -127,8 +127,9 @@ def test_tool_list_nodes_returns_active_nodes(tmp_path: Path) -> None:
                 context="Oil change", creator="chase@example.com",
                 timestamp="2026-03-05T10:00:00Z")
     response = tool_list_nodes(pool_path=str(pool))
-    assert response["count"] == 1
-    assert response["nodes"][0]["context"] == "Oil change"
+    assert response["count"] == 2  # latest + Oil change
+    non_latest = [n for n in response["nodes"] if n["node_id"] != "_latest"]
+    assert non_latest[0]["context"] == "Oil change"
 
 
 def test_tool_list_nodes_excludes_archived_by_default(tmp_path: Path) -> None:
@@ -141,8 +142,9 @@ def test_tool_list_nodes_excludes_archived_by_default(tmp_path: Path) -> None:
                 context="Archived note", creator="chase@example.com",
                 timestamp="2026-03-05T11:00:00Z", status="archived")
     response = tool_list_nodes(pool_path=str(pool))
-    assert response["count"] == 1
-    assert response["nodes"][0]["context"] == "Active note"
+    assert response["count"] == 2  # latest + Active note
+    non_latest = [n for n in response["nodes"] if n["node_id"] != "_latest"]
+    assert non_latest[0]["context"] == "Active note"
 
 
 def test_tool_list_nodes_includes_archived_when_requested(tmp_path: Path) -> None:
@@ -155,15 +157,15 @@ def test_tool_list_nodes_includes_archived_when_requested(tmp_path: Path) -> Non
                 context="Archived note", creator="chase@example.com",
                 timestamp="2026-03-05T11:00:00Z", status="archived")
     response = tool_list_nodes(pool_path=str(pool), include_statuses=["archived"])
-    assert response["count"] == 2
+    assert response["count"] == 3  # latest + Active + Archived
 
 
 def test_tool_list_nodes_empty_pool(tmp_path: Path) -> None:
-    """tool_list_nodes returns count 0 for an empty pool."""
+    """tool_list_nodes returns count 0 for pool with only latest node (no user nodes)."""
     pool = _setup_pool(tmp_path)
     response = tool_list_nodes(pool_path=str(pool))
-    assert response["count"] == 0
-    assert response["nodes"] == []
+    assert response["count"] == 1  # latest node only
+    assert response["nodes"][0]["node_id"] == "_latest"
 
 
 # ---------------------------------------------------------------------------
@@ -357,4 +359,43 @@ def test_tool_validate_pool_accepts_custom_type_from_hydration(tmp_path: Path) -
         pool_path=str(pool),
         config_dir=str(tmp_path / "global"),
     )
+    assert response["valid"] is True
+
+
+# ---------------------------------------------------------------------------
+# Latest node — MCP integration
+# ---------------------------------------------------------------------------
+
+
+def test_tool_show_node_normalizes_latest(tmp_path: Path) -> None:
+    """tool_show_node resolves 'latest' to the _latest node."""
+    pool = _setup_pool(tmp_path)
+    response = tool_show_node(pool_path=str(pool), node_id="latest")
+    assert response["found"] is True
+    assert response["node"]["node_id"] == "_latest"
+    assert response["node"]["node_type"] == "latest"
+
+
+def test_tool_show_node_underscore_latest(tmp_path: Path) -> None:
+    """tool_show_node works with '_latest' directly."""
+    pool = _setup_pool(tmp_path)
+    response = tool_show_node(pool_path=str(pool), node_id="_latest")
+    assert response["found"] is True
+    assert response["node"]["node_id"] == "_latest"
+
+
+def test_tool_list_nodes_includes_latest(tmp_path: Path) -> None:
+    """tool_list_nodes includes the latest node in results."""
+    pool = _setup_pool(tmp_path)
+    response = tool_list_nodes(pool_path=str(pool))
+    nodes = response["nodes"]
+    latest_nodes = [n for n in nodes if n["node_id"] == "_latest"]
+    assert len(latest_nodes) == 1
+    assert latest_nodes[0]["node_type"] == "latest"
+
+
+def test_tool_validate_pool_includes_latest(tmp_path: Path) -> None:
+    """tool_validate_pool validates the latest node."""
+    pool = _setup_pool(tmp_path)
+    response = tool_validate_pool(pool_path=str(pool))
     assert response["valid"] is True
