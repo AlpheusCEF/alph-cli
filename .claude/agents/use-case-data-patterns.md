@@ -1,1 +1,1 @@
-/Users/cpettet/git/chasemp/AlpheusCEF/agents/use-case-data-patterns.md
+/Users/cpettet/.claude/coding-agents/use-case-data-patterns.md

@@ -1,1 +1,1 @@
-/Users/cpettet/git/chasemp/AlpheusCEF/agents/pr-reviewer.md
+/Users/cpettet/.claude/coding-agents/pr-reviewer.md

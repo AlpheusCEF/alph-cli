@@ -1,1 +1,1 @@
-/Users/cpettet/git/chasemp/AlpheusCEF/agents/docs-guardian.md
+/Users/cpettet/.claude/coding-agents/docs-guardian.md

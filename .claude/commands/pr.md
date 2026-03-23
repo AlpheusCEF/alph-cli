@@ -1,1 +1,1 @@
-/Users/cpettet/git/chasemp/AlpheusCEF/agents/commands/pr.md
+/Users/cpettet/.claude/coding-agents/commands/pr.md

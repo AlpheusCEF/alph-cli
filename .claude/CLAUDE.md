@@ -1,5 +1,3 @@
-@/Users/cpettet/git/chasemp/AlpheusCEF/agents/CLAUDE.md
-
 # alph-cli: Surface Area Checklist
 
 When adding or changing functionality in core.py or cli.py, check whether these surfaces need updating too:

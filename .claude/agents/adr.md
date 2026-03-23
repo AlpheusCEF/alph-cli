@@ -1,1 +1,1 @@
-/Users/cpettet/git/chasemp/AlpheusCEF/agents/adr.md
+/Users/cpettet/.claude/coding-agents/adr.md
